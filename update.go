@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -33,24 +34,43 @@ type githubRelease struct {
 	Assets      []githubReleaseAsset `json:"assets"`
 }
 
+type updaterState struct {
+	ReleaseTag  string `json:"releaseTag"`
+	ReleaseName string `json:"releaseName"`
+	AssetURL    string `json:"assetUrl"`
+	AssetName   string `json:"assetName"`
+	InstalledAt string `json:"installedAt"`
+}
+
+var semverLikeRegex = regexp.MustCompile(`v?\d+\.\d+\.\d+(?:[-+._][0-9a-zA-Z.-]+)?`)
+
 func runInteractiveSelfUpdate() error {
 	fmt.Printf("Checking updates from %s ...\n", defaultConnectorReleasesPage)
+	execPath, err := resolveExecutablePath()
+	if err != nil {
+		return err
+	}
+
 	release, err := fetchLatestGitHubRelease()
 	if err != nil {
 		return err
 	}
 
-	latest := normalizeVersionString(firstNonEmpty(release.TagName, release.Name))
-	if latest == "" {
-		latest = "unknown"
-	}
-	current := normalizeVersionString(ConnectorVersion)
-	if latest != "unknown" && compareVersionStrings(current, latest) >= 0 {
-		fmt.Printf("Already up to date. current=%s latest=%s\n", ConnectorVersion, firstNonEmpty(release.TagName, release.Name))
+	releaseLabel := firstNonEmpty(release.TagName, release.Name, "unknown")
+	state := loadUpdaterState(execPath)
+	if isReleaseAlreadyInstalled(state, release) {
+		fmt.Printf("Already up to date (tracked by updater). current=%s latest=%s\n", ConnectorVersion, releaseLabel)
 		return nil
 	}
 
-	fmt.Printf("Update available: current=%s latest=%s\n", ConnectorVersion, firstNonEmpty(release.TagName, release.Name))
+	latestComparable := extractComparableVersion(firstNonEmpty(release.TagName, release.Name))
+	currentComparable := extractComparableVersion(ConnectorVersion)
+	if latestComparable != "" && currentComparable != "" && compareVersionStrings(currentComparable, latestComparable) >= 0 {
+		fmt.Printf("Already up to date. current=%s latest=%s\n", ConnectorVersion, releaseLabel)
+		return nil
+	}
+
+	fmt.Printf("Update available: current=%s latest=%s\n", ConnectorVersion, releaseLabel)
 	fmt.Printf("Release page: %s\n", firstNonEmpty(release.HTMLURL, defaultConnectorReleasesPage))
 
 	asset := selectBestAsset(release.Assets)
@@ -70,9 +90,16 @@ func runInteractiveSelfUpdate() error {
 		return nil
 	}
 
-	if err := installAssetUpdate(*asset); err != nil {
+	if err := installAssetUpdate(*asset, execPath); err != nil {
 		return err
 	}
+	saveUpdaterState(execPath, updaterState{
+		ReleaseTag:  strings.TrimSpace(release.TagName),
+		ReleaseName: strings.TrimSpace(release.Name),
+		AssetURL:    strings.TrimSpace(asset.BrowserDownloadURL),
+		AssetName:   strings.TrimSpace(asset.Name),
+		InstalledAt: time.Now().UTC().Format(time.RFC3339),
+	})
 
 	fmt.Println("Update installed successfully. Restart connector service to apply the new binary.")
 	return nil
@@ -156,18 +183,7 @@ func selectBestAsset(assets []githubReleaseAsset) *githubReleaseAsset {
 	return &assets[bestIndex]
 }
 
-func installAssetUpdate(asset githubReleaseAsset) error {
-	execPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("cannot detect executable path: %w", err)
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(execPath); resolveErr == nil && strings.TrimSpace(resolved) != "" {
-		execPath = resolved
-	}
-	if execPath == "" {
-		return fmt.Errorf("empty executable path")
-	}
-
+func installAssetUpdate(asset githubReleaseAsset, execPath string) error {
 	tmpFile, err := os.CreateTemp("", "connector-go-update-*")
 	if err != nil {
 		return err
@@ -223,6 +239,71 @@ func installAssetUpdate(asset githubReleaseAsset) error {
 
 	fmt.Printf("Backup saved at: %s\n", backupPath)
 	return nil
+}
+
+func resolveExecutablePath() (string, error) {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("cannot detect executable path: %w", err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(execPath); resolveErr == nil && strings.TrimSpace(resolved) != "" {
+		execPath = resolved
+	}
+	execPath = strings.TrimSpace(execPath)
+	if execPath == "" {
+		return "", fmt.Errorf("empty executable path")
+	}
+	return execPath, nil
+}
+
+func extractComparableVersion(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	match := semverLikeRegex.FindString(trimmed)
+	if match == "" {
+		return normalizeVersionString(trimmed)
+	}
+	return normalizeVersionString(match)
+}
+
+func updaterStatePath(execPath string) string {
+	return execPath + ".release.json"
+}
+
+func loadUpdaterState(execPath string) updaterState {
+	var state updaterState
+	raw, err := os.ReadFile(updaterStatePath(execPath))
+	if err != nil {
+		return state
+	}
+	_ = json.Unmarshal(raw, &state)
+	return state
+}
+
+func saveUpdaterState(execPath string, state updaterState) {
+	path := updaterStatePath(execPath)
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, raw, 0o644)
+}
+
+func isReleaseAlreadyInstalled(state updaterState, release *githubRelease) bool {
+	if release == nil {
+		return false
+	}
+	remoteTag := strings.TrimSpace(release.TagName)
+	remoteName := strings.TrimSpace(release.Name)
+	if remoteTag != "" && strings.EqualFold(strings.TrimSpace(state.ReleaseTag), remoteTag) {
+		return true
+	}
+	if remoteTag == "" && remoteName != "" && strings.EqualFold(strings.TrimSpace(state.ReleaseName), remoteName) {
+		return true
+	}
+	return false
 }
 
 func askYesNo(prompt string) (bool, error) {
