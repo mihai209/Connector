@@ -1,0 +1,11 @@
+{
+  "name": "connector-go",
+  "version": "1.0.0",
+  "description": "Acest daemon inlocuieste connector-ul Node.js cu unul scris in Go, pastrand protocolul cu panel-ul existent.",
+  "main": "connector-go",
+  "scripts": {
+    "build": "go build -o connector-go"
+  },
+  "author": "Mihai209",
+  "license": "MIT"
+}
