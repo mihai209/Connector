@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const dockerDebugLogTailMaxChars = 32 * 1024
+
 func (s *Service) monitorDockerEvents() {
 	for {
 		s.runDockerEventsLoop()
@@ -90,6 +92,22 @@ func (s *Service) runDockerEventsLoop() {
 			"status":   status,
 		})
 
+		debugPayload := map[string]interface{}{
+			"type":     "server_debug_event",
+			"serverId": serverID,
+			"event":    action,
+		}
+		if state := s.inspectContainerState(serverID); len(state) > 0 {
+			debugPayload["state"] = state
+		}
+		if action == "stop" || action == "die" || action == "kill" {
+			if logTail := s.readDockerLogTail(serverID, 300, dockerDebugLogTailMaxChars); logTail != "" {
+				debugPayload["logTail"] = logTail
+				debugPayload["logSource"] = "docker"
+			}
+		}
+		_ = s.sendJSON(debugPayload)
+
 		if action == "start" {
 			go func(id int) {
 				time.Sleep(logAttachRetryDelay)
@@ -121,4 +139,65 @@ func (s *Service) runDockerEventsLoop() {
 func (s *Service) dockerContainerRunning(serverID int) bool {
 	out, err := runCommand("docker", "inspect", "-f", "{{.State.Running}}", fmt.Sprintf("cpanel-%d", serverID))
 	return err == nil && strings.TrimSpace(out) == "true"
+}
+
+func (s *Service) inspectContainerState(serverID int) map[string]interface{} {
+	out, err := runCommand("docker", "inspect", "-f", "{{json .State}}", fmt.Sprintf("cpanel-%d", serverID))
+	if err != nil {
+		return nil
+	}
+
+	var state map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &state); err != nil {
+		return nil
+	}
+
+	normalized := map[string]interface{}{}
+	if value, ok := state["Status"]; ok {
+		normalized["status"] = value
+	}
+	if value, ok := state["ExitCode"]; ok {
+		normalized["exitCode"] = value
+	}
+	if value, ok := state["OOMKilled"]; ok {
+		normalized["oomKilled"] = value
+	}
+	if value, ok := state["Error"]; ok {
+		normalized["error"] = value
+	}
+	if value, ok := state["FinishedAt"]; ok {
+		normalized["finishedAt"] = value
+	}
+	if value, ok := state["StartedAt"]; ok {
+		normalized["startedAt"] = value
+	}
+
+	return normalized
+}
+
+func (s *Service) readDockerLogTail(serverID int, tailLines int, maxChars int) string {
+	if tailLines <= 0 {
+		tailLines = 200
+	}
+	if maxChars <= 0 {
+		maxChars = dockerDebugLogTailMaxChars
+	}
+
+	containerName := fmt.Sprintf("cpanel-%d", serverID)
+	cmd := exec.Command("docker", "logs", "--tail", strconv.Itoa(tailLines), containerName)
+	outputBytes, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+
+	text := strings.TrimSpace(string(outputBytes))
+	if text == "" {
+		return ""
+	}
+
+	if len(text) <= maxChars {
+		return text
+	}
+	dropped := len(text) - maxChars
+	return fmt.Sprintf("[... docker logs truncated %d chars ...]\n%s", dropped, text[len(text)-maxChars:])
 }
