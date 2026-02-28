@@ -65,7 +65,22 @@ func runInteractiveSelfUpdate() error {
 
 	latestComparable := extractComparableVersion(firstNonEmpty(release.TagName, release.Name))
 	currentComparable := extractComparableVersion(ConnectorVersion)
-	if latestComparable != "" && currentComparable != "" && compareVersionStrings(currentComparable, latestComparable) >= 0 {
+	latestNormalized := normalizeVersionString(firstNonEmpty(release.TagName, release.Name))
+	currentNormalized := normalizeVersionString(ConnectorVersion)
+	if latestComparable != "" && currentComparable != "" {
+		cmp := compareVersionStrings(currentComparable, latestComparable)
+		if cmp > 0 {
+			fmt.Printf("Already up to date. current=%s latest=%s\n", ConnectorVersion, releaseLabel)
+			return nil
+		}
+		if cmp == 0 {
+			// Numeric versions are equal. Keep "up to date" only when labels are effectively equivalent.
+			if latestNormalized == "" || strings.EqualFold(latestNormalized, currentNormalized) || strings.HasPrefix(latestNormalized, currentNormalized+".") {
+				fmt.Printf("Already up to date. current=%s latest=%s\n", ConnectorVersion, releaseLabel)
+				return nil
+			}
+		}
+	} else if latestNormalized != "" && strings.EqualFold(latestNormalized, currentNormalized) {
 		fmt.Printf("Already up to date. current=%s latest=%s\n", ConnectorVersion, releaseLabel)
 		return nil
 	}
