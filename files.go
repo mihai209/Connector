@@ -16,10 +16,45 @@ import (
 )
 
 const (
-	fileHistoryDirName      = ".cpanel-history"
-	maxFileHistorySnapshots = 20
-	maxReadableHistoryBytes = 2 * maxEditableFileBytes
+	fileHistoryDirName       = ".cpanel-history"
+	maxFileHistorySnapshots  = 20
+	maxReadableHistoryBytes  = 2 * maxEditableFileBytes
+	archiveScanMaxEntries    = 256
+	archiveScanMaxTotalBytes = 8 * 1024 * 1024
+	archiveScanMaxEntryBytes = 256 * 1024
+	archiveMinerBlockScore   = 10
 )
+
+const (
+	archiveKindZip        = "zip"
+	archiveKindTar        = "tar"
+	archiveKindGzipSingle = "gzip-single"
+	archiveKindBzipSingle = "bzip2-single"
+	archiveKindXzSingle   = "xz-single"
+)
+
+var archiveMinerStrongPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bxmrig\b`),
+	regexp.MustCompile(`(?i)\bxmr-stak\b`),
+	regexp.MustCompile(`(?i)\bcpuminer\b`),
+	regexp.MustCompile(`(?i)\bminerd\b`),
+	regexp.MustCompile(`(?i)\bstratum\+tcp\b`),
+	regexp.MustCompile(`(?i)\brandomx\b`),
+	regexp.MustCompile(`(?i)\bcryptonight\b`),
+	regexp.MustCompile(`(?i)\bmoneroocean\b`),
+	regexp.MustCompile(`(?i)\bminexmr\b`),
+}
+
+var archiveMinerMediumPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bteamredminer\b`),
+	regexp.MustCompile(`(?i)\bethminer\b`),
+	regexp.MustCompile(`(?i)\bnbminer\b`),
+	regexp.MustCompile(`(?i)\bgminer\b`),
+	regexp.MustCompile(`(?i)\bsrbminer\b`),
+	regexp.MustCompile(`(?i)\bhashvault\b`),
+	regexp.MustCompile(`(?i)\b2miners\b`),
+	regexp.MustCompile(`(?i)\bnicehash\b`),
+}
 
 type cappedBuffer struct {
 	max int
@@ -94,6 +129,303 @@ func buildArchiveExtractCommand(archivePath, targetDir string) (string, []string
 	}
 }
 
+func detectArchiveKind(fileName string) (string, bool) {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	switch {
+	case strings.HasSuffix(lower, ".zip"):
+		return archiveKindZip, true
+	case strings.HasSuffix(lower, ".tar.gz"),
+		strings.HasSuffix(lower, ".tgz"),
+		strings.HasSuffix(lower, ".tar"),
+		strings.HasSuffix(lower, ".tar.bz2"),
+		strings.HasSuffix(lower, ".tbz2"),
+		strings.HasSuffix(lower, ".tar.xz"),
+		strings.HasSuffix(lower, ".txz"):
+		return archiveKindTar, true
+	case strings.HasSuffix(lower, ".gz"):
+		return archiveKindGzipSingle, true
+	case strings.HasSuffix(lower, ".bz2"):
+		return archiveKindBzipSingle, true
+	case strings.HasSuffix(lower, ".xz"):
+		return archiveKindXzSingle, true
+	default:
+		return "", false
+	}
+}
+
+func normalizeArchiveScanText(input string) string {
+	if strings.TrimSpace(input) == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(input))
+	for i := 0; i < len(input); i++ {
+		c := input[i]
+		if c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c <= 126) {
+			if c >= 'A' && c <= 'Z' {
+				b.WriteByte(c + 32)
+			} else {
+				b.WriteByte(c)
+			}
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
+func normalizeArchiveScanBytes(input []byte) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(input))
+	for _, c := range input {
+		if c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c <= 126) {
+			if c >= 'A' && c <= 'Z' {
+				b.WriteByte(c + 32)
+			} else {
+				b.WriteByte(c)
+			}
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
+func appendUniqueEvidence(evidence []string, values ...string) []string {
+	if len(values) == 0 {
+		return evidence
+	}
+	seen := make(map[string]struct{}, len(evidence))
+	for _, item := range evidence {
+		if item == "" {
+			continue
+		}
+		seen[item] = struct{}{}
+	}
+	for _, item := range values {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		evidence = append(evidence, item)
+		seen[item] = struct{}{}
+		if len(evidence) >= 16 {
+			break
+		}
+	}
+	return evidence
+}
+
+func detectMinerScoreInString(haystack string) (score int, strong bool, evidence []string) {
+	text := normalizeArchiveScanText(haystack)
+	if strings.TrimSpace(text) == "" {
+		return 0, false, nil
+	}
+
+	for _, pattern := range archiveMinerStrongPatterns {
+		if pattern.MatchString(text) {
+			score += 6
+			strong = true
+			evidence = appendUniqueEvidence(evidence, "strong:"+pattern.String())
+		}
+	}
+	for _, pattern := range archiveMinerMediumPatterns {
+		if pattern.MatchString(text) {
+			score += 3
+			evidence = appendUniqueEvidence(evidence, "medium:"+pattern.String())
+		}
+	}
+	return score, strong, evidence
+}
+
+func hasExecutableMagic(sample []byte) bool {
+	if len(sample) >= 4 && sample[0] == 0x7f && sample[1] == 0x45 && sample[2] == 0x4c && sample[3] == 0x46 {
+		return true
+	}
+	if len(sample) >= 2 && sample[0] == 0x4d && sample[1] == 0x5a {
+		return true
+	}
+	return false
+}
+
+type limitedBytesWriter struct {
+	max int
+	buf bytes.Buffer
+}
+
+func (w *limitedBytesWriter) Write(p []byte) (int, error) {
+	if w.max <= 0 {
+		return len(p), nil
+	}
+	remaining := w.max - w.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = w.buf.Write(p[:remaining])
+		return len(p), nil
+	}
+	_, _ = w.buf.Write(p)
+	return len(p), nil
+}
+
+func (w *limitedBytesWriter) Bytes() []byte {
+	return append([]byte(nil), w.buf.Bytes()...)
+}
+
+func runCommandCaptureLimitedBytes(command string, args []string, maxBytes int) ([]byte, error) {
+	if _, err := exec.LookPath(command); err != nil {
+		return nil, fmt.Errorf("%s is not installed on connector host", command)
+	}
+	cmd := exec.Command(command, args...)
+	out := &limitedBytesWriter{max: maxBytes}
+	errBuf := &cappedBuffer{max: 4096}
+	cmd.Stdout = out
+	cmd.Stderr = errBuf
+	if err := cmd.Run(); err != nil {
+		errText := errBuf.String()
+		if errText == "" {
+			errText = err.Error()
+		}
+		return nil, fmt.Errorf("%s failed: %s", command, errText)
+	}
+	return out.Bytes(), nil
+}
+
+func listArchiveEntriesForScan(archiveKind, archivePath, displayName string) ([]string, error) {
+	switch archiveKind {
+	case archiveKindZip:
+		out, err := runCommand("unzip", "-Z1", archivePath)
+		if err != nil {
+			return nil, err
+		}
+		lines := strings.Split(out, "\n")
+		entries := make([]string, 0, len(lines))
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasSuffix(trimmed, "/") {
+				continue
+			}
+			entries = append(entries, trimmed)
+		}
+		return entries, nil
+	case archiveKindTar:
+		out, err := runCommand("tar", "-tf", archivePath)
+		if err != nil {
+			return nil, err
+		}
+		lines := strings.Split(out, "\n")
+		entries := make([]string, 0, len(lines))
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasSuffix(trimmed, "/") {
+				continue
+			}
+			entries = append(entries, trimmed)
+		}
+		return entries, nil
+	case archiveKindGzipSingle, archiveKindBzipSingle, archiveKindXzSingle:
+		base := strings.TrimSpace(displayName)
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+		if base == "" {
+			base = "payload"
+		}
+		return []string{base}, nil
+	default:
+		return nil, fmt.Errorf("unsupported archive format")
+	}
+}
+
+func sampleArchiveEntryBytes(archiveKind, archivePath, entry string, maxBytes int) ([]byte, error) {
+	switch archiveKind {
+	case archiveKindZip:
+		return runCommandCaptureLimitedBytes("unzip", []string{"-p", archivePath, entry}, maxBytes)
+	case archiveKindTar:
+		return runCommandCaptureLimitedBytes("tar", []string{"-xOf", archivePath, entry}, maxBytes)
+	case archiveKindGzipSingle:
+		return runCommandCaptureLimitedBytes("gunzip", []string{"-c", archivePath}, maxBytes)
+	case archiveKindBzipSingle:
+		return runCommandCaptureLimitedBytes("bzip2", []string{"-dc", archivePath}, maxBytes)
+	case archiveKindXzSingle:
+		return runCommandCaptureLimitedBytes("xz", []string{"-dc", archivePath}, maxBytes)
+	default:
+		return nil, fmt.Errorf("unsupported archive format")
+	}
+}
+
+func inspectArchiveForMinerRisk(archivePath, displayName string) (bool, int, []string, error) {
+	kind, ok := detectArchiveKind(displayName)
+	if !ok {
+		return false, 0, nil, fmt.Errorf("unsupported archive format")
+	}
+
+	entries, err := listArchiveEntriesForScan(kind, archivePath, displayName)
+	if err != nil {
+		return false, 0, nil, err
+	}
+
+	totalScore := 0
+	hasStrong := false
+	evidence := make([]string, 0, 8)
+
+	for _, entry := range entries {
+		score, strong, ev := detectMinerScoreInString(entry)
+		totalScore += score
+		hasStrong = hasStrong || strong
+		evidence = appendUniqueEvidence(evidence, ev...)
+		if totalScore >= archiveMinerBlockScore && hasStrong {
+			return true, totalScore, evidence, nil
+		}
+	}
+
+	entriesToScan := entries
+	if len(entriesToScan) > archiveScanMaxEntries {
+		entriesToScan = entriesToScan[:archiveScanMaxEntries]
+	}
+
+	totalBytesRead := 0
+	for _, entry := range entriesToScan {
+		if totalBytesRead >= archiveScanMaxTotalBytes {
+			break
+		}
+		remaining := archiveScanMaxTotalBytes - totalBytesRead
+		limit := archiveScanMaxEntryBytes
+		if remaining < limit {
+			limit = remaining
+		}
+		sample, sampleErr := sampleArchiveEntryBytes(kind, archivePath, entry, limit)
+		if sampleErr != nil {
+			continue
+		}
+		if len(sample) == 0 {
+			continue
+		}
+
+		totalBytesRead += len(sample)
+		if hasExecutableMagic(sample) {
+			totalScore += 2
+			evidence = appendUniqueEvidence(evidence, "sig:exe:"+entry)
+		}
+
+		score, strong, ev := detectMinerScoreInString(normalizeArchiveScanBytes(sample))
+		totalScore += score
+		hasStrong = hasStrong || strong
+		evidence = appendUniqueEvidence(evidence, ev...)
+
+		if totalScore >= archiveMinerBlockScore && hasStrong {
+			return true, totalScore, evidence, nil
+		}
+	}
+
+	return false, totalScore, evidence, nil
+}
+
 func runExtractionCommand(command string, args []string) error {
 	if _, err := exec.LookPath(command); err != nil {
 		return fmt.Errorf("%s is not installed on connector host", command)
@@ -155,6 +487,20 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 	}
 	if stats.IsDir() {
 		sendErr("selected archive is a directory")
+		return
+	}
+	blocked, score, evidence, scanErr := inspectArchiveForMinerRisk(archivePath, name)
+	if scanErr != nil {
+		sendErr(fmt.Sprintf("archive security scan failed: %v", scanErr))
+		return
+	}
+	if blocked {
+		reason := fmt.Sprintf("archive blocked by anti-miner guard (score=%d)", score)
+		if len(evidence) > 0 {
+			reason = fmt.Sprintf("%s, evidence=%s", reason, strings.Join(evidence, ", "))
+		}
+		s.sendConsoleOutput(serverID, fmt.Sprintf("[!] %s\n", reason))
+		sendErr(reason)
 		return
 	}
 
