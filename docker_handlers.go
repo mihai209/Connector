@@ -9,6 +9,38 @@ import (
 	"time"
 )
 
+func parseMinecraftEULA(raw []byte) bool {
+	content := strings.TrimPrefix(string(raw), "\uFEFF")
+	accepted := false
+
+	for _, line := range strings.Split(content, "\n") {
+		entry := strings.TrimSpace(line)
+		if entry == "" || strings.HasPrefix(entry, "#") || strings.HasPrefix(entry, ";") {
+			continue
+		}
+
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		if key != "eula" {
+			continue
+		}
+
+		value := strings.ToLower(strings.TrimSpace(parts[1]))
+		switch value {
+		case "true", "1", "yes", "on":
+			accepted = true
+		case "false", "0", "no", "off":
+			accepted = false
+		}
+	}
+
+	return accepted
+}
+
 func (s *Service) executePowerAction(serverID int, action, stopCommand string) error {
 	if serverID <= 0 || action == "" {
 		return fmt.Errorf("invalid power payload")
@@ -171,7 +203,9 @@ func (s *Service) handleCheckEULA(message map[string]interface{}) {
 	eulaPath := filepath.Join(s.volumesPath, strconv.Itoa(serverID), "eula.txt")
 	accepted := false
 	if raw, err := os.ReadFile(eulaPath); err == nil {
-		accepted = strings.Contains(string(raw), "eula=true")
+		accepted = parseMinecraftEULA(raw)
+	} else if !os.IsNotExist(err) {
+		bootWarn("failed reading eula file server=%d path=%s error=%v", serverID, eulaPath, err)
 	}
 	_ = s.sendJSON(map[string]interface{}{
 		"type":     "eula_status",
