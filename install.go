@@ -190,6 +190,15 @@ func (s *Service) createAndStartRuntimeContainer(serverID int, serverPath string
 
 	containerID, err := runCommand("docker", args...)
 	if err != nil {
+		if shouldRetryContainerCreateWithoutHostIP(err) {
+			fallbackArgs, changed := buildContainerCreateArgsWithoutHostIP(args)
+			if changed {
+				s.sendConsoleOutput(serverID, "\x1b[1;33m[!] Docker publish bind failed on allocation IP. Retrying with wildcard host bind (0.0.0.0)...\x1b[0m\n")
+				containerID, err = runCommand("docker", fallbackArgs...)
+			}
+		}
+	}
+	if err != nil {
 		return "", err
 	}
 
@@ -239,6 +248,70 @@ func buildDockerPublishArg(hostIP string, hostPort, containerPort int, protocol 
 	}
 
 	return fmt.Sprintf("%s:%d:%d/%s", host, hostPort, containerPort, protocol)
+}
+
+func shouldRetryContainerCreateWithoutHostIP(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "cannot assign requested address")
+}
+
+func buildContainerCreateArgsWithoutHostIP(args []string) ([]string, bool) {
+	if len(args) == 0 {
+		return args, false
+	}
+	rewritten := make([]string, 0, len(args))
+	changed := false
+	for i := 0; i < len(args); i++ {
+		current := args[i]
+		if current == "-p" && (i+1) < len(args) {
+			mapped, didStrip := stripHostIPFromDockerPublishArg(args[i+1])
+			rewritten = append(rewritten, "-p", mapped)
+			if didStrip {
+				changed = true
+			}
+			i++
+			continue
+		}
+		rewritten = append(rewritten, current)
+	}
+	return rewritten, changed
+}
+
+func stripHostIPFromDockerPublishArg(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return value, false
+	}
+
+	// IPv6 publish format: [addr]:hostPort:containerPort/proto
+	if strings.HasPrefix(value, "[") {
+		closing := strings.Index(value, "]:")
+		if closing == -1 {
+			return value, false
+		}
+		tail := strings.TrimSpace(value[closing+2:])
+		if strings.Count(tail, ":") == 1 && strings.Contains(tail, "/") {
+			return tail, true
+		}
+		return value, false
+	}
+
+	// IPv4/hostname publish format: hostIP:hostPort:containerPort/proto
+	if strings.Count(value, ":") >= 2 {
+		first := strings.Index(value, ":")
+		if first > 0 {
+			tail := strings.TrimSpace(value[first+1:])
+			if strings.Count(tail, ":") == 1 && strings.Contains(tail, "/") {
+				return tail, true
+			}
+		}
+	}
+
+	return value, false
 }
 
 func (s *Service) runEggInstallation(serverID int, serverPath string, cfg ServerInstallConfig) error {
