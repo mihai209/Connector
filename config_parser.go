@@ -343,6 +343,8 @@ func applyConfigParser(parser string, content string, replacements []ConfigRepla
 		return applyKVParser(content, resolved, false), nil
 	case "ini":
 		return applyKVParser(content, resolved, true), nil
+	case "file":
+		return applyFileParser(content, resolved), nil
 	default:
 		return applyTextParser(content, resolved), nil
 	}
@@ -548,6 +550,106 @@ func applyTextParser(content string, entries []ConfigReplaceEntry) string {
 		out = strings.ReplaceAll(out, search, replace)
 	}
 	return out
+}
+
+func applyFileParser(content string, entries []ConfigReplaceEntry) string {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	out := strings.Join(lines, "\n")
+
+	for _, entry := range entries {
+		search := strings.TrimSpace(stringifyScalar(entry.Match))
+		replace := stringifyScalar(entry.ReplaceWith)
+		if search == "" {
+			continue
+		}
+		if entry.HasIfValue && !valuesEquivalent(search, entry.IfValue) {
+			continue
+		}
+
+		updatedLines := strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n")
+		replacedAny := false
+		for i, line := range updatedLines {
+			if fileLineMatches(line, search) {
+				updatedLines[i] = replace
+				replacedAny = true
+			}
+		}
+		if replacedAny {
+			out = strings.Join(updatedLines, "\n")
+			continue
+		}
+
+		// For simple key matches (e.g. "port"), never do global substring replacement.
+		// Append or upsert safely instead of mutating random substrings in the file.
+		if isSimpleConfigToken(search) {
+			out = appendConfigLine(out, search, replace)
+			continue
+		}
+
+		// Fallback for templates relying on pure token replacement with non-key patterns.
+		out = strings.ReplaceAll(out, search, replace)
+	}
+
+	if out != "" && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return out
+}
+
+func fileLineMatches(line string, search string) bool {
+	trimmedLine := strings.TrimSpace(line)
+	trimmedSearch := strings.TrimSpace(search)
+	if trimmedLine == "" || trimmedSearch == "" {
+		return false
+	}
+	if trimmedLine == trimmedSearch {
+		return true
+	}
+	if strings.Contains(trimmedSearch, "=") || strings.Contains(trimmedSearch, ":") || strings.Contains(trimmedSearch, " ") {
+		return strings.Contains(trimmedLine, trimmedSearch)
+	}
+	if !isSimpleConfigToken(trimmedSearch) {
+		return strings.Contains(trimmedLine, trimmedSearch)
+	}
+
+	if !strings.HasPrefix(trimmedLine, trimmedSearch) {
+		return false
+	}
+	if len(trimmedLine) == len(trimmedSearch) {
+		return true
+	}
+	next := trimmedLine[len(trimmedSearch)]
+	return next == ' ' || next == '\t' || next == '=' || next == ':'
+}
+
+func appendConfigLine(content string, key string, replace string) string {
+	out := content
+	trimmedReplace := strings.TrimSpace(replace)
+	if trimmedReplace == "" {
+		return out
+	}
+
+	if !strings.Contains(trimmedReplace, "=") && !strings.Contains(trimmedReplace, ":") {
+		trimmedReplace = key + "=" + trimmedReplace
+	}
+
+	if strings.TrimSpace(out) == "" {
+		return trimmedReplace
+	}
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return out + trimmedReplace
+}
+
+func isSimpleConfigToken(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func stringifyScalar(value interface{}) string {
