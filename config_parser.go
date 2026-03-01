@@ -28,6 +28,10 @@ func (s *Service) applyEggConfigFiles(serverID int, serverPath string, cfg Serve
 	rawDefinitions := resolveRawConfigFiles(cfg)
 	definitions := normalizeConfigFileDefinitions(rawDefinitions)
 	if len(definitions) == 0 {
+		context := buildEggTemplateContext(cfg)
+		if err := applyFallbackServerPropertiesPort(serverPath, context, definitions); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -62,8 +66,73 @@ func (s *Service) applyEggConfigFiles(serverID int, serverPath string, cfg Serve
 		s.sendConsoleOutput(serverID, fmt.Sprintf("\x1b[1;34m[*] Patched %s (%s).\x1b[0m\n", relativePath, definition.Parser))
 	}
 
+	if err := applyFallbackServerPropertiesPort(serverPath, context, definitions); err != nil {
+		return err
+	}
+
 	s.sendConsoleOutput(serverID, "\x1b[1;32m[✓] Egg config files applied.\x1b[0m\n")
 	return nil
+}
+
+func applyFallbackServerPropertiesPort(serverPath string, context map[string]string, definitions map[string]ConfigFileDefinition) error {
+	port := strings.TrimSpace(context["SERVER_PORT"])
+	if port == "" {
+		return nil
+	}
+	parsedPort, err := strconv.Atoi(port)
+	if err != nil || parsedPort < 1 || parsedPort > 65535 {
+		return nil
+	}
+
+	shouldPatch := false
+	for key := range definitions {
+		normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "\\", "/"))
+		if normalized == "server.properties" || strings.HasSuffix(normalized, "/server.properties") {
+			shouldPatch = true
+			break
+		}
+	}
+
+	targetPath, joinErr := safeJoin(serverPath, "server.properties")
+	if joinErr != nil {
+		return fmt.Errorf("invalid server.properties path: %w", joinErr)
+	}
+
+	raw, readErr := os.ReadFile(targetPath)
+	if readErr != nil {
+		if !shouldPatch {
+			return nil
+		}
+		raw = []byte{}
+	}
+
+	content := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	lines := strings.Split(content, "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "!") {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "server-port=") || strings.HasPrefix(lower, "server-port:") {
+			lines[i] = "server-port=" + strconv.Itoa(parsedPort)
+			found = true
+		}
+	}
+	if !found {
+		if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
+			lines = append(lines, "")
+		}
+		lines = append(lines, "server-port="+strconv.Itoa(parsedPort))
+	}
+
+	updated := strings.Join(lines, "\n")
+	if !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+
+	return os.WriteFile(targetPath, []byte(updated), 0o644)
 }
 
 func resolveRawConfigFiles(cfg ServerInstallConfig) interface{} {
