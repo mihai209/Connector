@@ -109,8 +109,12 @@ func (s *Service) createAndStartRuntimeContainer(serverID int, serverPath string
 
 	hostname := normalizeBrandHostname(cfg.BrandName)
 	args = append(args, "--hostname", hostname)
-	if domainname := strings.TrimSpace(s.cfg.Docker.Domainname); domainname != "" {
+	domainname := strings.TrimSpace(s.cfg.Docker.Domainname)
+	if domainname != "" {
 		args = append(args, "--domainname", domainname)
+	}
+	for _, hostAlias := range buildContainerSelfHostAliases(hostname, domainname) {
+		args = append(args, "--add-host", fmt.Sprintf("%s:127.0.0.1", hostAlias))
 	}
 	args = append(args, "-t", "-i")
 	args = append(args, "-w", "/home/container")
@@ -206,6 +210,29 @@ func (s *Service) createAndStartRuntimeContainer(serverID int, serverPath string
 		return "", err
 	}
 	return strings.TrimSpace(containerID), nil
+}
+
+func buildContainerSelfHostAliases(hostname, domainname string) []string {
+	seen := make(map[string]struct{})
+	aliases := make([]string, 0, 2)
+	add := func(raw string) {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		value = strings.Trim(value, ".")
+		if value == "" || strings.ContainsAny(value, " \t\r\n") {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		aliases = append(aliases, value)
+	}
+
+	add(hostname)
+	if strings.TrimSpace(hostname) != "" && strings.TrimSpace(domainname) != "" {
+		add(strings.Trim(strings.TrimSpace(hostname), ".") + "." + strings.Trim(strings.TrimSpace(domainname), "."))
+	}
+	return aliases
 }
 
 func stringifyEnvValue(value interface{}) string {
