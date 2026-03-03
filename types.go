@@ -16,6 +16,9 @@ const (
 	notRunningNoticeCooldown            = 5 * time.Second
 	heartbeatInterval                   = 10 * time.Second
 	wsReconnectDelay                    = 5 * time.Second
+	wsReconnectMaxDelay                 = 60 * time.Second
+	wsReconnectResetAfter               = 45 * time.Second
+	wsWriteTimeout                      = 10 * time.Second
 	logAttachRetryDelay                 = 1 * time.Second
 	sftpAuthTimeout                     = 7 * time.Second
 	defaultVolumesPath                  = "/var/lib/cpanel/volumes"
@@ -35,6 +38,8 @@ const (
 	defaultContainerPidLimit            = int64(512)
 	panelSFTPAuthPath                   = "/api/connector/sftp-auth"
 	serverStatsInterval                 = 2 * time.Second
+	commandRateWindow                   = 5 * time.Second
+	commandRateLimit                    = 40
 	maxEditableFileBytes          int64 = 5 * 1024 * 1024
 	maxRemoteDownloadBytes        int64 = 512 * 1024 * 1024
 	remoteDownloadTimeout               = 8 * time.Minute
@@ -127,6 +132,9 @@ type Service struct {
 	attachMu    sync.Mutex
 	attachStdin map[int]*AttachedStream
 
+	commandRateMu sync.Mutex
+	commandRate   map[int]CommandRateState
+
 	metricsMu sync.Mutex
 	metrics   ConnectorMetrics
 }
@@ -209,6 +217,11 @@ type FileListEntry struct {
 type AttachedStream struct {
 	WriteMu sync.Mutex
 	Stdin   io.WriteCloser
+}
+
+type CommandRateState struct {
+	WindowStart time.Time
+	Count       int
 }
 
 type ConnectorMetrics struct {

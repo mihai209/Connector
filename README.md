@@ -38,8 +38,10 @@ VOLUMES_PATH=/var/lib/cpanel/volumes \
 ### What It Handles
 
 - Connector authentication over WebSocket
+- Panic-safe WS handler dispatch (runtime recover + stack log)
 - Docker create/start/stop/restart/kill/delete
 - Live console stream + command execution (stdin)
+- Console command throttling per server (anti-flood)
 - File ops:
   - list/read/write
   - create folder
@@ -48,6 +50,8 @@ VOLUMES_PATH=/var/lib/cpanel/volumes \
   - unarchive in background (`extract_archive`)
 - Per-server schedule actions
 - Runtime metrics + heartbeat
+- Runtime health endpoint: `GET /healthz`
+- Runtime readiness endpoint: `GET /readyz` (503 when WS to panel is down)
 - SFTP service with panel-backed auth
 
 ### Minimal `config.json`

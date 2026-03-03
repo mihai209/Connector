@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -23,8 +24,23 @@ func (e *authFatalError) Error() string {
 	return fmt.Sprintf("panel auth failed: %s", e.reason)
 }
 
+func (s *Service) dispatchWSHandler(name string, handler func()) {
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				bootWarn("panic recovered in ws handler=%s panic=%v", name, recovered)
+				bootWarn("panic stack handler=%s stack=%s", name, strings.TrimSpace(string(debug.Stack())))
+			}
+		}()
+		handler()
+	}()
+}
+
 func (s *Service) runWSLoop() {
+	reconnectDelay := wsReconnectDelay
+
 	for {
+		startedAt := time.Now()
 		if err := s.connectAndServeWS(); err != nil {
 			var authErr *authFatalError
 			if errors.As(err, &authErr) {
@@ -33,8 +49,24 @@ func (s *Service) runWSLoop() {
 			}
 			bootInfo("websocket disconnected error=%v", err)
 		}
-		bootInfo("retrying websocket connection delay=%s", wsReconnectDelay)
-		time.Sleep(wsReconnectDelay)
+
+		sleepDelay := reconnectDelay
+		if sleepDelay < wsReconnectDelay {
+			sleepDelay = wsReconnectDelay
+		}
+
+		if time.Since(startedAt) >= wsReconnectResetAfter {
+			reconnectDelay = wsReconnectDelay
+		} else {
+			nextDelay := reconnectDelay * 2
+			if nextDelay > wsReconnectMaxDelay {
+				nextDelay = wsReconnectMaxDelay
+			}
+			reconnectDelay = nextDelay
+		}
+
+		bootInfo("retrying websocket connection delay=%s", sleepDelay)
+		time.Sleep(sleepDelay)
 	}
 }
 
@@ -54,6 +86,7 @@ func (s *Service) connectAndServeWS() error {
 		return err
 	}
 	defer conn.Close()
+	conn.SetReadLimit(2 * 1024 * 1024)
 
 	s.wsConnMu.Lock()
 	s.wsConn = conn
@@ -119,47 +152,47 @@ func (s *Service) handleWSMessage(payload []byte) error {
 	case "auth_fail":
 		return &authFatalError{reason: asString(envelope["error"])}
 	case "install_server":
-		go s.handleInstallServer(envelope)
+		s.dispatchWSHandler("install_server", func() { s.handleInstallServer(envelope) })
 	case "server_power":
-		go s.handlePowerAction(envelope)
+		s.dispatchWSHandler("server_power", func() { s.handlePowerAction(envelope) })
 	case "server_logs":
-		go s.handleServerLogs(envelope)
+		s.dispatchWSHandler("server_logs", func() { s.handleServerLogs(envelope) })
 	case "server_command":
-		go s.handleServerCommand(envelope)
+		s.dispatchWSHandler("server_command", func() { s.handleServerCommand(envelope) })
 	case "import_sftp_files":
-		go s.handleImportSFTPFiles(envelope)
+		s.dispatchWSHandler("import_sftp_files", func() { s.handleImportSFTPFiles(envelope) })
 	case "log_cleanup":
-		go s.handleLogCleanup(envelope)
+		s.dispatchWSHandler("log_cleanup", func() { s.handleLogCleanup(envelope) })
 	case "check_server_status":
-		go s.handleCheckServerStatus(envelope)
+		s.dispatchWSHandler("check_server_status", func() { s.handleCheckServerStatus(envelope) })
 	case "check_eula":
-		go s.handleCheckEULA(envelope)
+		s.dispatchWSHandler("check_eula", func() { s.handleCheckEULA(envelope) })
 	case "accept_eula":
-		go s.handleAcceptEULA(envelope)
+		s.dispatchWSHandler("accept_eula", func() { s.handleAcceptEULA(envelope) })
 	case "delete_server":
-		go s.handleDeleteServer(envelope)
+		s.dispatchWSHandler("delete_server", func() { s.handleDeleteServer(envelope) })
 	case "read_file":
-		go s.handleReadFile(envelope)
+		s.dispatchWSHandler("read_file", func() { s.handleReadFile(envelope) })
 	case "write_file":
-		go s.handleWriteFile(envelope)
+		s.dispatchWSHandler("write_file", func() { s.handleWriteFile(envelope) })
 	case "list_file_versions":
-		go s.handleListFileVersions(envelope)
+		s.dispatchWSHandler("list_file_versions", func() { s.handleListFileVersions(envelope) })
 	case "read_file_version":
-		go s.handleReadFileVersion(envelope)
+		s.dispatchWSHandler("read_file_version", func() { s.handleReadFileVersion(envelope) })
 	case "extract_archive":
-		go s.handleExtractArchive(envelope)
+		s.dispatchWSHandler("extract_archive", func() { s.handleExtractArchive(envelope) })
 	case "download_file":
-		go s.handleDownloadFile(envelope)
+		s.dispatchWSHandler("download_file", func() { s.handleDownloadFile(envelope) })
 	case "list_files", "create_folder", "create_file", "rename_file", "delete_files", "set_permissions":
-		go s.handleFilesAction(messageType, envelope)
+		s.dispatchWSHandler(messageType, func() { s.handleFilesAction(messageType, envelope) })
 	case "file_action", "server_file_action":
 		if handled := s.dispatchFileActionAlias(envelope); handled {
 			// handled
 		}
 	case "schedule_action", "server_schedule_action":
-		go s.handleServerScheduleAction(envelope)
+		s.dispatchWSHandler("server_schedule_action", func() { s.handleServerScheduleAction(envelope) })
 	case "apply_resource_limits", "server_apply_resource_limits", "server_resource_limits_apply":
-		go s.handleApplyResourceLimits(envelope)
+		s.dispatchWSHandler("server_apply_resource_limits", func() { s.handleApplyResourceLimits(envelope) })
 	default:
 		// keep compatibility with future panel messages.
 	}
@@ -174,25 +207,25 @@ func (s *Service) dispatchFileActionAlias(envelope map[string]interface{}) bool 
 	}
 	switch action {
 	case "list_files", "create_folder", "create_file", "rename_file", "delete_files", "set_permissions":
-		go s.handleFilesAction(action, envelope)
+		s.dispatchWSHandler(action, func() { s.handleFilesAction(action, envelope) })
 		return true
 	case "read_file":
-		go s.handleReadFile(envelope)
+		s.dispatchWSHandler("read_file", func() { s.handleReadFile(envelope) })
 		return true
 	case "write_file":
-		go s.handleWriteFile(envelope)
+		s.dispatchWSHandler("write_file", func() { s.handleWriteFile(envelope) })
 		return true
 	case "list_file_versions":
-		go s.handleListFileVersions(envelope)
+		s.dispatchWSHandler("list_file_versions", func() { s.handleListFileVersions(envelope) })
 		return true
 	case "read_file_version":
-		go s.handleReadFileVersion(envelope)
+		s.dispatchWSHandler("read_file_version", func() { s.handleReadFileVersion(envelope) })
 		return true
 	case "extract_archive":
-		go s.handleExtractArchive(envelope)
+		s.dispatchWSHandler("extract_archive", func() { s.handleExtractArchive(envelope) })
 		return true
 	case "download_file":
-		go s.handleDownloadFile(envelope)
+		s.dispatchWSHandler("download_file", func() { s.handleDownloadFile(envelope) })
 		return true
 	default:
 		return false

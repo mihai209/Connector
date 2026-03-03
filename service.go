@@ -2,14 +2,25 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	httpReadTimeout       = 15 * time.Second
+	httpReadHeaderTimeout = 10 * time.Second
+	httpWriteTimeout      = 60 * time.Second
+	httpIdleTimeout       = 60 * time.Second
+	httpMaxHeaderBytes    = 1 << 20
+	httpMaxBodyBytes      = int64(1 << 20)
 )
 
 func NewService(cfg Config, volumesPath string) *Service {
@@ -33,6 +44,7 @@ func NewService(cfg Config, volumesPath string) *Service {
 		diskUsageCache:       make(map[int]DiskUsageCacheEntry),
 		lastNotRunningNotice: make(map[int]time.Time),
 		attachStdin:          make(map[int]*AttachedStream),
+		commandRate:          make(map[int]CommandRateState),
 		metrics: ConnectorMetrics{
 			StartTime: time.Now().UTC(),
 		},
@@ -70,6 +82,50 @@ func (s *Service) startAPIServer() {
 
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		snapshot := s.metricsSnapshot()
+		uptimeSeconds := time.Since(snapshot.StartTime).Seconds()
+		if uptimeSeconds < 0 {
+			uptimeSeconds = 0
+		}
+
+		payload := map[string]interface{}{
+			"ok":             true,
+			"ws_connected":   snapshot.WSConnected,
+			"uptime_seconds": int64(uptimeSeconds),
+			"time":           time.Now().UTC().Format(time.RFC3339),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(payload)
+	})
+
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		snapshot := s.metricsSnapshot()
+		ready := snapshot.WSConnected
+		statusCode := http.StatusOK
+		if !ready {
+			statusCode = http.StatusServiceUnavailable
+		}
+
+		payload := map[string]interface{}{
+			"ready":        ready,
+			"ws_connected": snapshot.WSConnected,
+			"time":         time.Now().UTC().Format(time.RFC3339),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(payload)
+	})
+
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		s.handleMetrics(w, r)
 	})
@@ -82,10 +138,8 @@ func (s *Service) startAPIServer() {
 			return
 		}
 
-		serverIDRaw := pathParts[2]
-		var serverID int
-		fmt.Sscanf(serverIDRaw, "%d", &serverID)
-		if serverID <= 0 {
+		serverID, parseErr := strconv.Atoi(strings.TrimSpace(pathParts[2]))
+		if parseErr != nil || serverID <= 0 {
 			http.Error(w, "Invalid server ID", http.StatusBadRequest)
 			return
 		}
@@ -99,15 +153,24 @@ func (s *Service) startAPIServer() {
 	})
 
 	listenAddr := fmt.Sprintf(":%d", port)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
+	httpServer := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadTimeout:       httpReadTimeout,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
+	}
+	if err := httpServer.ListenAndServe(); err != nil {
 		bootFatal("api server crashed: %v", err)
 	}
 }
 
 func (s *Service) handleHTTPFileRead(w http.ResponseWriter, r *http.Request, serverID int) {
-	authHeader := r.Header.Get("Authorization")
-	expectedToken := "Bearer " + s.cfg.Connector.Token
-	if authHeader != expectedToken {
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	expectedToken := "Bearer " + strings.TrimSpace(s.cfg.Connector.Token)
+	if expectedToken == "Bearer" || subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedToken)) != 1 {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -115,7 +178,10 @@ func (s *Service) handleHTTPFileRead(w http.ResponseWriter, r *http.Request, ser
 	var payload struct {
 		Path string `json:"path"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, httpMaxBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
@@ -168,7 +234,10 @@ func (s *Service) sendJSON(v interface{}) error {
 
 	s.wsWriteMu.Lock()
 	defer s.wsWriteMu.Unlock()
-	return conn.WriteJSON(v)
+	_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+	err := conn.WriteJSON(v)
+	_ = conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (s *Service) sendError(message string, serverID ...int) {
@@ -204,4 +273,31 @@ func (s *Service) marshalMessage(input map[string]interface{}, out interface{}) 
 		return err
 	}
 	return json.Unmarshal(raw, out)
+}
+
+func (s *Service) allowServerCommand(serverID int) bool {
+	if serverID <= 0 {
+		return false
+	}
+
+	now := time.Now().UTC()
+	s.commandRateMu.Lock()
+	defer s.commandRateMu.Unlock()
+
+	state := s.commandRate[serverID]
+	if state.WindowStart.IsZero() || now.Sub(state.WindowStart) >= commandRateWindow {
+		s.commandRate[serverID] = CommandRateState{
+			WindowStart: now,
+			Count:       1,
+		}
+		return true
+	}
+
+	if state.Count >= commandRateLimit {
+		return false
+	}
+
+	state.Count++
+	s.commandRate[serverID] = state
+	return true
 }

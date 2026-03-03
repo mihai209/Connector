@@ -95,6 +95,9 @@ func (s *Service) executeServerCommand(serverID int, command string) error {
 	if command == "" {
 		return fmt.Errorf("command is empty")
 	}
+	if !s.allowServerCommand(serverID) {
+		return fmt.Errorf("command throttled: too many commands in a short time")
+	}
 	containerName := fmt.Sprintf("cpanel-%d", serverID)
 	return s.sendCommandToServerStdin(serverID, containerName, command)
 }
