@@ -456,9 +456,9 @@ func (s *Service) allowServerCommand(serverID int) bool {
 }
 
 func (s *Service) chownUser() string {
-	if s.cfg.Docker.Rootless.Enabled {
-		uid := s.cfg.Docker.Rootless.ContainerUID
-		gid := s.cfg.Docker.Rootless.ContainerGID
+    if s.cfg.Docker.Rootless.Enabled {
+        uid := s.cfg.Docker.Rootless.ContainerUID
+        gid := s.cfg.Docker.Rootless.ContainerGID
 		if uid < 0 {
 			uid = 0
 		}
@@ -466,6 +466,17 @@ func (s *Service) chownUser() string {
 			gid = 0
 		}
 		return fmt.Sprintf("%d:%d", uid, gid)
+    }
+    return "1000:1000"
+}
+
+func (s *Service) fixServerPermissions(serverPath string) error {
+	if strings.TrimSpace(serverPath) == "" {
+		return fmt.Errorf("server path is empty")
 	}
-	return "1000:1000"
+	if _, err := runCommand("chown", "-R", s.chownUser(), serverPath); err != nil {
+		return err
+	}
+	_, err := runCommand("chmod", "-R", "u+rwX", serverPath)
+	return err
 }

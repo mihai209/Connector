@@ -106,7 +106,9 @@ func (s *Service) handleImportSFTPFiles(message map[string]interface{}) {
 	}
 	stats.maybeEmit(true)
 
-	_, _ = runCommand("chown", "-R", s.chownUser(), targetRoot)
+	if err := s.fixServerPermissions(targetRoot); err != nil {
+		s.sendConsoleOutput(serverID, fmt.Sprintf("\x1b[1;33m[!] Could not fix server permissions: %v\x1b[0m\n", err))
+	}
 	s.sendSFTPImportResult(serverID, true, stats.Files, stats.Directories, stats.Bytes, "")
 }
 

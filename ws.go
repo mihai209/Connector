@@ -161,6 +161,8 @@ func (s *Service) handleWSMessage(payload []byte) error {
 		s.dispatchWSHandler("server_command", func() { s.handleServerCommand(envelope) })
 	case "import_sftp_files":
 		s.dispatchWSHandler("import_sftp_files", func() { s.handleImportSFTPFiles(envelope) })
+	case "fix_server_permissions":
+		s.dispatchWSHandler("fix_server_permissions", func() { s.handleFixServerPermissions(envelope) })
 	case "log_cleanup":
 		s.dispatchWSHandler("log_cleanup", func() { s.handleLogCleanup(envelope) })
 	case "check_server_status":
