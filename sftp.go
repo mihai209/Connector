@@ -55,7 +55,7 @@ func (s *Service) startSFTPServer() error {
 					return
 				}
 
-				vfs := newVirtualSFTPFS(s.volumesPath, authData)
+				vfs := newVirtualSFTPFS(s.volumesPath, authData, s.cfg.SFTP.ReadOnly)
 				handlers := sftp.Handlers{
 					FileGet:  vfs,
 					FilePut:  vfs,
@@ -136,9 +136,10 @@ func ensureSFTPHostKey(path string) (gossh.Signer, error) {
 type virtualSFTPFS struct {
 	volumesPath string
 	allowed     map[string]int // containerId -> serverId
+	readOnly    bool
 }
 
-func newVirtualSFTPFS(volumesPath string, auth *SFTPAuthResponse) *virtualSFTPFS {
+func newVirtualSFTPFS(volumesPath string, auth *SFTPAuthResponse, readOnly bool) *virtualSFTPFS {
 	allowed := map[string]int{}
 	for _, server := range auth.Servers {
 		containerID := strings.TrimSpace(server.ContainerID)
@@ -147,7 +148,7 @@ func newVirtualSFTPFS(volumesPath string, auth *SFTPAuthResponse) *virtualSFTPFS
 		}
 		allowed[containerID] = server.ID
 	}
-	return &virtualSFTPFS{volumesPath: volumesPath, allowed: allowed}
+	return &virtualSFTPFS{volumesPath: volumesPath, allowed: allowed, readOnly: readOnly}
 }
 
 type resolvedVirtualPath struct {
@@ -201,6 +202,9 @@ func (v *virtualSFTPFS) Fileread(req *sftp.Request) (io.ReaderAt, error) {
 }
 
 func (v *virtualSFTPFS) Filewrite(req *sftp.Request) (io.WriterAt, error) {
+	if v.readOnly {
+		return nil, os.ErrPermission
+	}
 	resolved, err := v.resolve(req.Filepath)
 	if err != nil {
 		return nil, err
@@ -219,6 +223,9 @@ func (v *virtualSFTPFS) Filewrite(req *sftp.Request) (io.WriterAt, error) {
 }
 
 func (v *virtualSFTPFS) OpenFile(req *sftp.Request) (sftp.WriterAtReaderAt, error) {
+	if v.readOnly {
+		return nil, os.ErrPermission
+	}
 	resolved, err := v.resolve(req.Filepath)
 	if err != nil {
 		return nil, err
@@ -233,6 +240,9 @@ func (v *virtualSFTPFS) OpenFile(req *sftp.Request) (sftp.WriterAtReaderAt, erro
 }
 
 func (v *virtualSFTPFS) Filecmd(req *sftp.Request) error {
+	if v.readOnly {
+		return os.ErrPermission
+	}
 	switch req.Method {
 	case "Rename":
 		source, err := v.resolve(req.Filepath)

@@ -88,21 +88,47 @@ func (s *Service) runDockerEventsLoop() {
 			status = "running"
 		}
 
-		_ = s.sendJSON(map[string]interface{}{
-			"type":     "server_status_update",
-			"serverId": serverID,
-			"status":   status,
-		})
-
 		debugPayload := map[string]interface{}{
 			"type":     "server_debug_event",
 			"serverId": serverID,
 			"event":    action,
 		}
 		state := s.inspectContainerState(serverID)
+		exitCode := -1
+		oomKilled := false
 		if len(state) > 0 {
 			debugPayload["state"] = state
+			if value, ok := state["exitCode"]; ok {
+				switch typed := value.(type) {
+				case float64:
+					exitCode = int(typed)
+				case int:
+					exitCode = typed
+				case string:
+					if parsed, err := strconv.Atoi(strings.TrimSpace(typed)); err == nil {
+						exitCode = parsed
+					}
+				}
+			}
+			if value, ok := state["oomKilled"]; ok {
+				if parsed, okBool := value.(bool); okBool {
+					oomKilled = parsed
+				}
+			}
 		}
+
+		statusPayload := map[string]interface{}{
+			"type":     "server_status_update",
+			"serverId": serverID,
+			"status":   status,
+		}
+		if exitCode >= 0 {
+			statusPayload["exitCode"] = exitCode
+		}
+		if oomKilled {
+			statusPayload["oomKilled"] = true
+		}
+		_ = s.sendJSON(statusPayload)
 		logTail := ""
 		if action == "stop" || action == "die" || action == "kill" {
 			logTail = s.readDockerLogTail(serverID, 300, dockerDebugLogTailMaxChars)

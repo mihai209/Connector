@@ -22,12 +22,16 @@ func loadConfig(configPath string) (Config, error) {
 	cfg.Panel.URL = strings.TrimSpace(cfg.Panel.URL)
 	cfg.Panel.AllowedURLs = normalizeAllowedOrigins(cfg.Panel.AllowedURLs)
 	cfg.Panel.AllowedOrigins = normalizeAllowedOrigins(cfg.Panel.AllowedOrigins)
+	cfg.API.Host = strings.TrimSpace(cfg.API.Host)
 	cfg.API.AllowedOrigins = normalizeAllowedOrigins(cfg.API.AllowedOrigins)
 	cfg.API.AllowedOriginsLegacy = normalizeAllowedOrigins(cfg.API.AllowedOriginsLegacy)
+	cfg.API.TrustedProxies = normalizeTrustedProxies(cfg.API.TrustedProxies)
 	cfg.Connector.Token = strings.TrimSpace(cfg.Connector.Token)
 	cfg.SFTP.Host = strings.TrimSpace(cfg.SFTP.Host)
 	cfg.SFTP.Directory = strings.TrimSpace(cfg.SFTP.Directory)
 	cfg.SFTP.HostKeyPath = strings.TrimSpace(cfg.SFTP.HostKeyPath)
+	cfg.API.SSL.CertFile = strings.TrimSpace(cfg.API.SSL.CertFile)
+	cfg.API.SSL.KeyFile = strings.TrimSpace(cfg.API.SSL.KeyFile)
 	cfg.Docker.Domainname = strings.TrimSpace(cfg.Docker.Domainname)
 	cfg.Docker.Network.Name = strings.TrimSpace(cfg.Docker.Network.Name)
 	cfg.Docker.Network.Driver = strings.TrimSpace(cfg.Docker.Network.Driver)
@@ -57,6 +61,9 @@ func loadConfig(configPath string) (Config, error) {
 	}
 	cfg.Panel.AllowedURLs = mergedAllowedOrigins
 
+	if cfg.API.Host == "" {
+		cfg.API.Host = "0.0.0.0"
+	}
 	if cfg.SFTP.Host == "" {
 		cfg.SFTP.Host = defaultSFTPBindHost
 	}
@@ -120,6 +127,22 @@ func loadConfig(configPath string) (Config, error) {
 	if cfg.Docker.ContainerPidLimit <= 0 {
 		cfg.Docker.ContainerPidLimit = defaultContainerPidLimit
 	}
+	if cfg.System.DiskCheckTtlSeconds <= 0 {
+		cfg.System.DiskCheckTtlSeconds = defaultDiskUsageCacheTTLSeconds
+	}
+	if cfg.Transfers.DownloadLimit < 0 {
+		cfg.Transfers.DownloadLimit = 0
+	}
+	if cfg.Throttles.Enabled == nil {
+		enabled := true
+		cfg.Throttles.Enabled = &enabled
+	}
+	if cfg.Throttles.Lines == 0 {
+		cfg.Throttles.Lines = defaultConsoleThrottleLines
+	}
+	if cfg.Throttles.LineResetInterval == 0 {
+		cfg.Throttles.LineResetInterval = defaultConsoleThrottleIntervalMs
+	}
 
 	// Backward-compat flag: internal -> is_internal.
 	if cfg.Docker.Network.Internal {
@@ -168,6 +191,23 @@ func normalizeAllowedOrigins(groups ...[]string) []string {
 		}
 	}
 
+	return normalized
+}
+
+func normalizeTrustedProxies(values []string) []string {
+	normalized := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
 	return normalized
 }
 

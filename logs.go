@@ -67,6 +67,10 @@ func (s *Service) clearBufferedLogs(serverID int) {
 	s.cacheMu.Lock()
 	delete(s.lastNotRunningNotice, serverID)
 	s.cacheMu.Unlock()
+
+	s.consoleThrottleMu.Lock()
+	delete(s.consoleThrottle, serverID)
+	s.consoleThrottleMu.Unlock()
 }
 
 func (s *Service) shouldSendNotRunningNotice(serverID int) bool {
@@ -83,7 +87,7 @@ func (s *Service) shouldSendNotRunningNotice(serverID int) bool {
 func (s *Service) getDiskUsageMB(serverID int) int {
 	s.cacheMu.Lock()
 	cached, ok := s.diskUsageCache[serverID]
-	if ok && time.Since(cached.TS) < diskUsageCacheTTL {
+	if ok && time.Since(cached.TS) < s.diskUsageCacheTTL {
 		s.cacheMu.Unlock()
 		return cached.UsedMB
 	}

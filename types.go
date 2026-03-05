@@ -12,7 +12,7 @@ import (
 const (
 	logBufferMaxLines                   = 500
 	logBufferMaxBytes                   = 1024 * 1024
-	diskUsageCacheTTL                   = 10 * time.Second
+	defaultDiskUsageCacheTTLSeconds     = 10
 	notRunningNoticeCooldown            = 5 * time.Second
 	heartbeatInterval                   = 10 * time.Second
 	wsReconnectDelay                    = 5 * time.Second
@@ -36,6 +36,8 @@ const (
 	defaultDockerNetworkMTU             = int64(1500)
 	defaultContainerTmpfsSizeMB         = uint(100)
 	defaultContainerPidLimit            = int64(512)
+	defaultConsoleThrottleLines         = uint64(2000)
+	defaultConsoleThrottleIntervalMs    = uint64(100)
 	panelSFTPAuthPath                   = "/api/connector/sftp-auth"
 	serverStatsInterval                 = 2 * time.Second
 	commandRateWindow                   = 5 * time.Second
@@ -54,9 +56,16 @@ type Config struct {
 		AllowedOrigins []string `json:"allowedOrigins"`
 	} `json:"panel"`
 	API struct {
+		Host                 string   `json:"host"`
 		Port                 int      `json:"port"`
 		AllowedOrigins       []string `json:"allowedOrigins"`
 		AllowedOriginsLegacy []string `json:"allowed_origins"`
+		TrustedProxies       []string `json:"trustedProxies"`
+		SSL                  struct {
+			Enabled  bool   `json:"enabled"`
+			CertFile string `json:"cert"`
+			KeyFile  string `json:"key"`
+		} `json:"ssl"`
 	} `json:"api"`
 	Connector struct {
 		ID    int    `json:"id"`
@@ -68,11 +77,17 @@ type Config struct {
 		Port        int    `json:"port"`
 		Directory   string `json:"directory"`
 		HostKeyPath string `json:"hostKeyPath"`
+		ReadOnly    bool   `json:"readOnly"`
 	} `json:"sftp"`
 	Docker struct {
 		Domainname        string `json:"domainname"`
 		TmpfsSize         uint   `json:"tmpfs_size"`
 		ContainerPidLimit int64  `json:"container_pid_limit"`
+		Rootless          struct {
+			Enabled      bool `json:"enabled"`
+			ContainerUID int  `json:"container_uid"`
+			ContainerGID int  `json:"container_gid"`
+		} `json:"rootless"`
 		Network           struct {
 			Interface string   `json:"interface"`
 			DNS       []string `json:"dns"`
@@ -102,12 +117,30 @@ type Config struct {
 			Attachable bool `json:"attachable"`
 		} `json:"network"`
 	} `json:"docker"`
+	System struct {
+		DiskCheckTtlSeconds int `json:"diskCheckTtlSeconds"`
+	} `json:"system"`
+	Transfers struct {
+		DownloadLimit int `json:"downloadLimit"`
+	} `json:"transfers"`
+	Throttles struct {
+		Enabled           *bool  `json:"enabled"`
+		Lines             uint64 `json:"lines"`
+		LineResetInterval uint64 `json:"lineResetInterval"`
+	} `json:"throttles"`
 }
 
 type Service struct {
 	cfg         Config
 	volumesPath string
 	crashPath   string
+	diskUsageCacheTTL       time.Duration
+	consoleThrottleEnabled  bool
+	consoleThrottleLines    uint64
+	consoleThrottleInterval time.Duration
+	consoleThrottleMu       sync.Mutex
+	consoleThrottle         map[int]ConsoleThrottleState
+	downloadLimitBytesPerSec int64
 
 	wsConn    *websocket.Conn
 	wsConnMu  sync.RWMutex
@@ -175,6 +208,7 @@ type ServerInstallConfig struct {
 	ConfigFiles    interface{}            `json:"configFiles"`
 	BrandName      string                 `json:"brandName"`
 	Ports          []PortMapping          `json:"ports"`
+	Mounts         []MountMapping         `json:"mounts"`
 }
 
 type PortMapping struct {
@@ -182,6 +216,12 @@ type PortMapping struct {
 	Host      int    `json:"host"`
 	IP        string `json:"ip"`
 	Protocol  string `json:"protocol"`
+}
+
+type MountMapping struct {
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"readOnly"`
 }
 
 type SFTPAuthRequest struct {
@@ -222,6 +262,12 @@ type AttachedStream struct {
 type CommandRateState struct {
 	WindowStart time.Time
 	Count       int
+}
+
+type ConsoleThrottleState struct {
+	WindowStart time.Time
+	Count       uint64
+	Warned      bool
 }
 
 type ConnectorMetrics struct {

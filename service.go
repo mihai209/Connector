@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,18 +34,45 @@ func NewService(cfg Config, volumesPath string) *Service {
 	}
 	crashPath := filepath.Join(filepath.Dir(volumes), "debug-bundles")
 
+	diskTTL := time.Duration(cfg.System.DiskCheckTtlSeconds) * time.Second
+	if diskTTL <= 0 {
+		diskTTL = time.Duration(defaultDiskUsageCacheTTLSeconds) * time.Second
+	}
+	throttleEnabled := true
+	if cfg.Throttles.Enabled != nil {
+		throttleEnabled = *cfg.Throttles.Enabled
+	}
+	throttleLines := cfg.Throttles.Lines
+	if throttleLines == 0 {
+		throttleLines = defaultConsoleThrottleLines
+	}
+	throttleInterval := time.Duration(cfg.Throttles.LineResetInterval) * time.Millisecond
+	if throttleInterval <= 0 {
+		throttleInterval = time.Duration(defaultConsoleThrottleIntervalMs) * time.Millisecond
+	}
+	downloadLimit := int64(cfg.Transfers.DownloadLimit) * 1024 * 1024
+	if downloadLimit < 0 {
+		downloadLimit = 0
+	}
+
 	return &Service{
-		cfg:                  cfg,
-		volumesPath:          volumes,
-		crashPath:            crashPath,
-		activeLog:            make(map[int]context.CancelFunc),
-		activeStat:           make(map[int]context.CancelFunc),
-		pendingAttach:        make(map[int]bool),
-		logBuffers:           make(map[int]*LogBuffer),
-		diskUsageCache:       make(map[int]DiskUsageCacheEntry),
-		lastNotRunningNotice: make(map[int]time.Time),
-		attachStdin:          make(map[int]*AttachedStream),
-		commandRate:          make(map[int]CommandRateState),
+		cfg:                      cfg,
+		volumesPath:              volumes,
+		crashPath:                crashPath,
+		diskUsageCacheTTL:         diskTTL,
+		consoleThrottleEnabled:   throttleEnabled,
+		consoleThrottleLines:     throttleLines,
+		consoleThrottleInterval:  throttleInterval,
+		consoleThrottle:          make(map[int]ConsoleThrottleState),
+		downloadLimitBytesPerSec: downloadLimit,
+		activeLog:                make(map[int]context.CancelFunc),
+		activeStat:               make(map[int]context.CancelFunc),
+		pendingAttach:            make(map[int]bool),
+		logBuffers:               make(map[int]*LogBuffer),
+		diskUsageCache:           make(map[int]DiskUsageCacheEntry),
+		lastNotRunningNotice:     make(map[int]time.Time),
+		attachStdin:              make(map[int]*AttachedStream),
+		commandRate:              make(map[int]CommandRateState),
 		metrics: ConnectorMetrics{
 			StartTime: time.Now().UTC(),
 		},
@@ -78,6 +106,10 @@ func (s *Service) startAPIServer() {
 	port := s.cfg.API.Port
 	if port <= 0 {
 		port = defaultAPIPort
+	}
+	host := strings.TrimSpace(s.cfg.API.Host)
+	if host == "" {
+		host = "0.0.0.0"
 	}
 
 	mux := http.NewServeMux()
@@ -152,7 +184,7 @@ func (s *Service) startAPIServer() {
 		http.Error(w, "Not found", http.StatusNotFound)
 	})
 
-	listenAddr := fmt.Sprintf(":%d", port)
+	listenAddr := fmt.Sprintf("%s:%d", host, port)
 	httpServer := &http.Server{
 		Addr:              listenAddr,
 		Handler:           mux,
@@ -161,6 +193,17 @@ func (s *Service) startAPIServer() {
 		WriteTimeout:      httpWriteTimeout,
 		IdleTimeout:       httpIdleTimeout,
 		MaxHeaderBytes:    httpMaxHeaderBytes,
+	}
+	if s.cfg.API.SSL.Enabled {
+		cert := strings.TrimSpace(s.cfg.API.SSL.CertFile)
+		key := strings.TrimSpace(s.cfg.API.SSL.KeyFile)
+		if cert == "" || key == "" {
+			bootFatal("api server ssl enabled but cert/key missing")
+		}
+		if err := httpServer.ListenAndServeTLS(cert, key); err != nil {
+			bootFatal("api server crashed: %v", err)
+		}
+		return
 	}
 	if err := httpServer.ListenAndServe(); err != nil {
 		bootFatal("api server crashed: %v", err)
@@ -171,6 +214,7 @@ func (s *Service) handleHTTPFileRead(w http.ResponseWriter, r *http.Request, ser
 	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 	expectedToken := "Bearer " + strings.TrimSpace(s.cfg.Connector.Token)
 	if expectedToken == "Bearer" || subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedToken)) != 1 {
+		bootWarn("api unauthorized ip=%s server=%d", s.resolveClientIP(r), serverID)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -224,6 +268,57 @@ func (s *Service) handleHTTPFileRead(w http.ResponseWriter, r *http.Request, ser
 	io.Copy(w, f)
 }
 
+func (s *Service) resolveClientIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	remoteIP := ""
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		remoteIP = host
+	} else {
+		remoteIP = r.RemoteAddr
+	}
+	remoteIP = strings.TrimSpace(remoteIP)
+	if remoteIP == "" {
+		return ""
+	}
+	if len(s.cfg.API.TrustedProxies) == 0 || !s.isTrustedProxy(remoteIP) {
+		return remoteIP
+	}
+
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+		return xrip
+	}
+	return remoteIP
+}
+
+func (s *Service) isTrustedProxy(ip string) bool {
+	if ip == "" {
+		return false
+	}
+	parsed := net.ParseIP(ip)
+	for _, entry := range s.cfg.API.TrustedProxies {
+		value := strings.TrimSpace(entry)
+		if value == "" {
+			continue
+		}
+		if strings.Contains(value, "/") {
+			if _, cidr, err := net.ParseCIDR(value); err == nil && parsed != nil && cidr.Contains(parsed) {
+				return true
+			}
+		} else if value == ip {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) sendJSON(v interface{}) error {
 	s.wsConnMu.RLock()
 	conn := s.wsConn
@@ -256,8 +351,24 @@ func (s *Service) sendServerError(serverID int, message string) {
 }
 
 func (s *Service) sendConsoleOutput(serverID int, output string) {
+	s.sendConsoleOutputInternal(serverID, output, false)
+}
+
+func (s *Service) sendConsoleOutputBypass(serverID int, output string) {
+	s.sendConsoleOutputInternal(serverID, output, true)
+}
+
+func (s *Service) sendConsoleOutputInternal(serverID int, output string, bypassThrottle bool) {
 	if strings.TrimSpace(output) == "" {
 		return
+	}
+	if !bypassThrottle && s.consoleThrottleEnabled {
+		lineCount := countConsoleLines(output)
+		if lineCount > 0 {
+			if !s.allowConsoleOutput(serverID, lineCount) {
+				return
+			}
+		}
 	}
 	s.appendLogBuffer(serverID, output)
 	_ = s.sendJSON(map[string]interface{}{
@@ -265,6 +376,48 @@ func (s *Service) sendConsoleOutput(serverID int, output string) {
 		"serverId": serverID,
 		"output":   output,
 	})
+}
+
+func countConsoleLines(output string) uint64 {
+	if output == "" {
+		return 0
+	}
+	lines := uint64(strings.Count(output, "\n"))
+	if !strings.HasSuffix(output, "\n") {
+		lines++
+	}
+	return lines
+}
+
+func (s *Service) allowConsoleOutput(serverID int, lineCount uint64) bool {
+	if serverID <= 0 {
+		return false
+	}
+	now := time.Now()
+	s.consoleThrottleMu.Lock()
+	defer s.consoleThrottleMu.Unlock()
+
+	state := s.consoleThrottle[serverID]
+	if state.WindowStart.IsZero() || now.Sub(state.WindowStart) >= s.consoleThrottleInterval {
+		state.WindowStart = now
+		state.Count = 0
+		state.Warned = false
+	}
+
+	if state.Count+lineCount > s.consoleThrottleLines {
+		if !state.Warned {
+			state.Warned = true
+			s.consoleThrottle[serverID] = state
+			s.sendConsoleOutputBypass(serverID, "\x1b[1;33m[!] Console output throttled to protect panel stability.\x1b[0m\n")
+		} else {
+			s.consoleThrottle[serverID] = state
+		}
+		return false
+	}
+
+	state.Count += lineCount
+	s.consoleThrottle[serverID] = state
+	return true
 }
 
 func (s *Service) marshalMessage(input map[string]interface{}, out interface{}) error {
@@ -300,4 +453,19 @@ func (s *Service) allowServerCommand(serverID int) bool {
 	state.Count++
 	s.commandRate[serverID] = state
 	return true
+}
+
+func (s *Service) chownUser() string {
+	if s.cfg.Docker.Rootless.Enabled {
+		uid := s.cfg.Docker.Rootless.ContainerUID
+		gid := s.cfg.Docker.Rootless.ContainerGID
+		if uid < 0 {
+			uid = 0
+		}
+		if gid < 0 {
+			gid = 0
+		}
+		return fmt.Sprintf("%d:%d", uid, gid)
+	}
+	return "1000:1000"
 }

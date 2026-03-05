@@ -533,7 +533,7 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 	go func() {
 		err := runExtractionCommand(command, args)
 		if err == nil {
-			_, _ = runCommand("chown", "-R", "1000:1000", targetDirAbs)
+			_, _ = runCommand("chown", "-R", s.chownUser(), targetDirAbs)
 		}
 
 		result := map[string]interface{}{
@@ -878,7 +878,7 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 			sendErr(err.Error())
 			return
 		}
-		_, _ = runCommand("chown", "-R", "1000:1000", targetPath)
+		_, _ = runCommand("chown", "-R", s.chownUser(), targetPath)
 	case "create_file":
 		targetPath, err := safeJoin(currentDir, name)
 		if err != nil {
@@ -899,7 +899,7 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 			return
 		}
 		_ = f.Close()
-		_, _ = runCommand("chown", "-R", "1000:1000", targetPath)
+		_, _ = runCommand("chown", "-R", s.chownUser(), targetPath)
 	case "list_files":
 		if _, err := os.Stat(currentDir); err != nil {
 			sendErr("directory not found")

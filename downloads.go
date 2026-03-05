@@ -9,6 +9,7 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func sanitizeDownloadBasename(name string) string {
@@ -151,8 +152,11 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 		return
 	}
 
-	limitedReader := io.LimitReader(resp.Body, maxRemoteDownloadBytes+1)
-	written, copyErr := io.Copy(out, limitedReader)
+	bodyReader := io.LimitReader(resp.Body, maxRemoteDownloadBytes+1)
+	if s.downloadLimitBytesPerSec > 0 {
+		bodyReader = newRateLimitedReader(bodyReader, s.downloadLimitBytesPerSec)
+	}
+	written, copyErr := io.Copy(out, bodyReader)
 	closeErr := out.Close()
 
 	if copyErr != nil {
@@ -177,7 +181,7 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 		return
 	}
 
-	_, _ = runCommand("chown", "-R", "1000:1000", targetPath)
+	_, _ = runCommand("chown", "-R", s.chownUser(), targetPath)
 
 	relPath := filepath.ToSlash(filepath.Join(directory, fileName))
 	if !strings.HasPrefix(relPath, "/") {
@@ -185,4 +189,40 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 	}
 
 	s.sendDownloadFileResult(serverID, requestID, true, "", fileName, relPath, written)
+}
+
+type rateLimitedReader struct {
+	reader            io.Reader
+	limitBytesPerSec  int64
+	start             time.Time
+	bytes             int64
+}
+
+func newRateLimitedReader(reader io.Reader, limitBytesPerSec int64) io.Reader {
+	if limitBytesPerSec <= 0 {
+		return reader
+	}
+	return &rateLimitedReader{
+		reader:           reader,
+		limitBytesPerSec: limitBytesPerSec,
+		start:            time.Now(),
+	}
+}
+
+func (r *rateLimitedReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n <= 0 || r.limitBytesPerSec <= 0 {
+		return n, err
+	}
+
+	r.bytes += int64(n)
+	elapsed := time.Since(r.start)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	expected := time.Duration(float64(r.bytes)/float64(r.limitBytesPerSec)*float64(time.Second))
+	if expected > elapsed {
+		time.Sleep(expected - elapsed)
+	}
+	return n, err
 }

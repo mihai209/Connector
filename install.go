@@ -95,7 +95,7 @@ func (s *Service) removeContainerIfExists(serverID int) error {
 }
 
 func (s *Service) chownServerPath(serverPath string) error {
-	_, err := runCommand("chown", "-R", "1000:1000", serverPath)
+	_, err := runCommand("chown", "-R", s.chownUser(), serverPath)
 	return err
 }
 
@@ -119,6 +119,21 @@ func (s *Service) createAndStartRuntimeContainer(serverID int, serverPath string
 	args = append(args, "-t", "-i")
 	args = append(args, "-w", "/home/container")
 	args = append(args, "-v", fmt.Sprintf("%s:/home/container", serverPath))
+	for _, mount := range cfg.Mounts {
+		source := strings.TrimSpace(mount.Source)
+		target := strings.TrimSpace(mount.Target)
+		if source == "" || target == "" {
+			continue
+		}
+		if !strings.HasPrefix(target, "/") {
+			target = "/" + strings.TrimLeft(target, "/")
+		}
+		mountArg := fmt.Sprintf("%s:%s", source, target)
+		if mount.ReadOnly {
+			mountArg += ":ro"
+		}
+		args = append(args, "-v", mountArg)
+	}
 	if networkMode != "" {
 		args = append(args, "--network", networkMode)
 	}
@@ -137,6 +152,17 @@ func (s *Service) createAndStartRuntimeContainer(serverID int, serverPath string
 	}
 	if pidsLimit > 0 {
 		args = append(args, "--pids-limit", strconv.FormatInt(pidsLimit, 10))
+	}
+	if s.cfg.Docker.Rootless.Enabled {
+		uid := s.cfg.Docker.Rootless.ContainerUID
+		gid := s.cfg.Docker.Rootless.ContainerGID
+		if uid < 0 {
+			uid = 0
+		}
+		if gid < 0 {
+			gid = 0
+		}
+		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
 
 	if cfg.Memory > 0 {
@@ -366,7 +392,7 @@ func (s *Service) runEggInstallation(serverID int, serverPath string, cfg Server
 	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o755); err != nil {
 		return err
 	}
-	_, _ = runCommand("chown", "1000:1000", scriptPath)
+	_, _ = runCommand("chown", s.chownUser(), scriptPath)
 
 	installerName := fmt.Sprintf("cpanel-installer-%d-%d", serverID, time.Now().Unix())
 	args := []string{"run", "--rm", "--name", installerName, "-v", fmt.Sprintf("%s:/mnt/server", serverPath), "-w", "/mnt/server"}

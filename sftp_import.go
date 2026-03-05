@@ -106,7 +106,7 @@ func (s *Service) handleImportSFTPFiles(message map[string]interface{}) {
 	}
 	stats.maybeEmit(true)
 
-	_, _ = runCommand("chown", "-R", "1000:1000", targetRoot)
+	_, _ = runCommand("chown", "-R", s.chownUser(), targetRoot)
 	s.sendSFTPImportResult(serverID, true, stats.Files, stats.Directories, stats.Bytes, "")
 }
 

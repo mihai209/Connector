@@ -179,11 +179,32 @@ func (s *Service) handleCheckServerStatus(message map[string]interface{}) {
 	if running {
 		status = "running"
 	}
-	_ = s.sendJSON(map[string]interface{}{
+	statusPayload := map[string]interface{}{
 		"type":     "server_status_update",
 		"serverId": serverID,
 		"status":   status,
-	})
+	}
+	if !running {
+		state := s.inspectContainerState(serverID)
+		if value, ok := state["exitCode"]; ok {
+			switch typed := value.(type) {
+			case float64:
+				statusPayload["exitCode"] = int(typed)
+			case int:
+				statusPayload["exitCode"] = typed
+			case string:
+				if parsed, err := strconv.Atoi(strings.TrimSpace(typed)); err == nil {
+					statusPayload["exitCode"] = parsed
+				}
+			}
+		}
+		if value, ok := state["oomKilled"]; ok {
+			if parsed, okBool := value.(bool); okBool && parsed {
+				statusPayload["oomKilled"] = true
+			}
+		}
+	}
+	_ = s.sendJSON(statusPayload)
 
 	diskMB := 0
 	if running {
