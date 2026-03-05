@@ -85,6 +85,9 @@ func (s *Service) Start() error {
 		return fmt.Errorf("ensure docker network: %w", err)
 	}
 
+	bootInfo("repairing existing server volume permissions")
+	s.repairExistingServerPermissions()
+
 	bootInfo("starting sftp subsystem")
 	if err := s.startSFTPServer(); err != nil {
 		return fmt.Errorf("start sftp: %w", err)
@@ -474,9 +477,20 @@ func (s *Service) fixServerPermissions(serverPath string) error {
 	if strings.TrimSpace(serverPath) == "" {
 		return fmt.Errorf("server path is empty")
 	}
+
+	// Keep ownership aligned with configured runtime user when possible.
+	chownErr := error(nil)
 	if _, err := runCommand("chown", "-R", s.chownUser(), serverPath); err != nil {
+		chownErr = err
+	}
+
+	// Fallback to broad write permissions so images running with non-1000 UID/GID
+	// can still write files after migration/import.
+	if _, err := runCommand("chmod", "-R", "a+rwX", serverPath); err != nil {
+		if chownErr != nil {
+			return fmt.Errorf("chown failed: %v; chmod failed: %v", chownErr, err)
+		}
 		return err
 	}
-	_, err := runCommand("chmod", "-R", "u+rwX", serverPath)
-	return err
+	return nil
 }
