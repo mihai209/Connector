@@ -146,7 +146,8 @@ func (s *Service) createAndStartRuntimeContainer(serverID int, serverPath string
 		}
 	}
 	if s.cfg.Docker.TmpfsSize > 0 {
-		args = append(args, "--tmpfs", fmt.Sprintf("/tmp:rw,size=%dm", s.cfg.Docker.TmpfsSize))
+		// Java/Netty/SQLite extract native libraries to /tmp and need execute permission.
+		args = append(args, "--tmpfs", fmt.Sprintf("/tmp:rw,exec,nosuid,nodev,size=%dm", s.cfg.Docker.TmpfsSize))
 	}
 
 	pidsLimit := int64(cfg.PidsLimit)
