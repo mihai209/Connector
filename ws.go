@@ -17,11 +17,57 @@ type authFatalError struct {
 	reason string
 }
 
+const (
+	wsReadLimitMinMB int64 = 8
+	wsReadLimitMaxMB int64 = 1024
+)
+
 func (e *authFatalError) Error() string {
 	if strings.TrimSpace(e.reason) == "" {
 		return "panel auth failed"
 	}
 	return fmt.Sprintf("panel auth failed: %s", e.reason)
+}
+
+func clampWSReadLimitMB(limitMb int64) int64 {
+	if limitMb < wsReadLimitMinMB {
+		return wsReadLimitMinMB
+	}
+	if limitMb > wsReadLimitMaxMB {
+		return wsReadLimitMaxMB
+	}
+	return limitMb
+}
+
+func (s *Service) getWSReadLimitMB() int64 {
+	s.wsConnMu.RLock()
+	current := s.wsReadLimitMB
+	s.wsConnMu.RUnlock()
+	if current <= 0 {
+		return clampWSReadLimitMB(defaultWSReadLimitMB)
+	}
+	return clampWSReadLimitMB(current)
+}
+
+func (s *Service) applyWSReadLimitMB(limitMb int64, source string) {
+	normalized := clampWSReadLimitMB(limitMb)
+	if strings.TrimSpace(source) == "" {
+		source = "runtime"
+	}
+	readLimitBytes := normalized * 1024 * 1024
+	previous := int64(0)
+
+	s.wsConnMu.Lock()
+	previous = s.wsReadLimitMB
+	s.wsReadLimitMB = normalized
+	if s.wsConn != nil {
+		s.wsConn.SetReadLimit(readLimitBytes)
+	}
+	s.wsConnMu.Unlock()
+
+	if previous != normalized {
+		bootInfo("updated websocket read limit mb=%d source=%s", normalized, source)
+	}
 }
 
 func (s *Service) dispatchWSHandler(name string, handler func()) {
@@ -86,7 +132,8 @@ func (s *Service) connectAndServeWS() error {
 		return err
 	}
 	defer conn.Close()
-	conn.SetReadLimit(2 * 1024 * 1024)
+	readLimitBytes := s.getWSReadLimitMB() * 1024 * 1024
+	conn.SetReadLimit(readLimitBytes)
 
 	s.wsConnMu.Lock()
 	s.wsConn = conn
@@ -118,6 +165,12 @@ func (s *Service) connectAndServeWS() error {
 		_, payload, err := conn.ReadMessage()
 		if err != nil {
 			s.cleanupAllStreams()
+			if strings.Contains(strings.ToLower(err.Error()), "read limit exceeded") {
+				bootWarn(
+					"websocket read limit exceeded (limit_mb=%d). Increase system.wsReadLimitMb or CONNECTOR_WS_READ_LIMIT_MB if needed.",
+					s.getWSReadLimitMB(),
+				)
+			}
 			if closeErr, ok := err.(*websocket.CloseError); ok {
 				reason := strings.ToLower(strings.TrimSpace(closeErr.Text))
 				if closeErr.Code == 4003 || strings.Contains(reason, "invalid token") || strings.Contains(reason, "token regenerated") || strings.Contains(reason, "token revoked") {
@@ -151,6 +204,14 @@ func (s *Service) handleWSMessage(payload []byte) error {
 		bootInfo("websocket auth succeeded connector_id=%d", s.cfg.Connector.ID)
 	case "auth_fail":
 		return &authFatalError{reason: asString(envelope["error"])}
+	case "connector_set_ws_read_limit":
+		limitMb := asInt(envelope["limitMb"])
+		if limitMb <= 0 {
+			limitMb = asInt(envelope["wsReadLimitMb"])
+		}
+		if limitMb > 0 {
+			s.applyWSReadLimitMB(int64(limitMb), asString(envelope["source"]))
+		}
 	case "install_server":
 		s.dispatchWSHandler("install_server", func() { s.handleInstallServer(envelope) })
 	case "server_power":

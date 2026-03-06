@@ -59,6 +59,7 @@ func NewService(cfg Config, volumesPath string) *Service {
 		cfg:                      cfg,
 		volumesPath:              volumes,
 		crashPath:                crashPath,
+		wsReadLimitMB:            clampWSReadLimitMB(cfg.System.WSReadLimitMB),
 		diskUsageCacheTTL:         diskTTL,
 		consoleThrottleEnabled:   throttleEnabled,
 		consoleThrottleLines:     throttleLines,

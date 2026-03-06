@@ -38,6 +38,7 @@ const (
 	defaultContainerPidLimit            = int64(512)
 	defaultConsoleThrottleLines         = uint64(2000)
 	defaultConsoleThrottleIntervalMs    = uint64(100)
+	defaultWSReadLimitMB                = int64(128)
 	panelSFTPAuthPath                   = "/api/connector/sftp-auth"
 	serverStatsInterval                 = 2 * time.Second
 	commandRateWindow                   = 5 * time.Second
@@ -118,7 +119,8 @@ type Config struct {
 		} `json:"network"`
 	} `json:"docker"`
 	System struct {
-		DiskCheckTtlSeconds int `json:"diskCheckTtlSeconds"`
+		DiskCheckTtlSeconds int   `json:"diskCheckTtlSeconds"`
+		WSReadLimitMB       int64 `json:"wsReadLimitMb"`
 	} `json:"system"`
 	Transfers struct {
 		DownloadLimit int `json:"downloadLimit"`
@@ -134,6 +136,7 @@ type Service struct {
 	cfg         Config
 	volumesPath string
 	crashPath   string
+	wsReadLimitMB int64
 	diskUsageCacheTTL       time.Duration
 	consoleThrottleEnabled  bool
 	consoleThrottleLines    uint64

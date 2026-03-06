@@ -95,6 +95,7 @@ func printBootMetadata(configPath string, cfg Config, volumesPath string) {
 	bootInfo("configured docker runtime domainname=%s tmpfs_size_mb=%d pids_limit=%d", cfg.Docker.Domainname, cfg.Docker.TmpfsSize, cfg.Docker.ContainerPidLimit)
 	bootInfo("configured data directory volumes_path=%s", volumesPath)
 	bootInfo("configured sftp endpoint bind=%s:%d host_key=%s", cfg.SFTP.Host, cfg.SFTP.Port, cfg.SFTP.HostKeyPath)
+	bootInfo("configured websocket read limit mb=%d", cfg.System.WSReadLimitMB)
 }
 
 func printStartupBoot(configPath string, cfg Config, volumesPath string) {

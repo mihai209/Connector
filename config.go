@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -129,6 +130,20 @@ func loadConfig(configPath string) (Config, error) {
 	}
 	if cfg.System.DiskCheckTtlSeconds <= 0 {
 		cfg.System.DiskCheckTtlSeconds = defaultDiskUsageCacheTTLSeconds
+	}
+	if cfg.System.WSReadLimitMB <= 0 {
+		cfg.System.WSReadLimitMB = defaultWSReadLimitMB
+	}
+	if envLimit := strings.TrimSpace(os.Getenv("CONNECTOR_WS_READ_LIMIT_MB")); envLimit != "" {
+		if parsed, err := strconv.ParseInt(envLimit, 10, 64); err == nil && parsed > 0 {
+			cfg.System.WSReadLimitMB = parsed
+		}
+	}
+	if cfg.System.WSReadLimitMB < 8 {
+		cfg.System.WSReadLimitMB = 8
+	}
+	if cfg.System.WSReadLimitMB > 1024 {
+		cfg.System.WSReadLimitMB = 1024
 	}
 	if cfg.Transfers.DownloadLimit < 0 {
 		cfg.Transfers.DownloadLimit = 0
