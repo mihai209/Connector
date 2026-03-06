@@ -193,26 +193,27 @@ type ServerInstallMessage struct {
 }
 
 type ServerInstallConfig struct {
-	Image             string                 `json:"image"`
-	Memory            int                    `json:"memory"`
-	CPU               int                    `json:"cpu"`
-	Disk              int                    `json:"disk"`
-	SwapLimit         int                    `json:"swapLimit"`
-	IOWeight          int                    `json:"ioWeight"`
-	PidsLimit         int                    `json:"pidsLimit"`
-	OOMKillDisable    bool                   `json:"oomKillDisable"`
-	OOMScoreAdj       int                    `json:"oomScoreAdj"`
-	Env               map[string]interface{} `json:"env"`
-	Startup           string                 `json:"startup"`
-	StartupMode       string                 `json:"startupMode"`
-	EggConfig         map[string]interface{} `json:"eggConfig"`
-	EggScripts        map[string]interface{} `json:"eggScripts"`
-	Installation      map[string]interface{} `json:"installation"`
-	ConfigFiles       interface{}            `json:"configFiles"`
-	BrandName         string                 `json:"brandName"`
-	StartAfterInstall *bool                  `json:"startAfterInstall"`
-	Ports             []PortMapping          `json:"ports"`
-	Mounts            []MountMapping         `json:"mounts"`
+	Image                  string                 `json:"image"`
+	Memory                 int                    `json:"memory"`
+	CPU                    int                    `json:"cpu"`
+	Disk                   int                    `json:"disk"`
+	SwapLimit              int                    `json:"swapLimit"`
+	IOWeight               int                    `json:"ioWeight"`
+	PidsLimit              int                    `json:"pidsLimit"`
+	OOMKillDisable         bool                   `json:"oomKillDisable"`
+	OOMScoreAdj            int                    `json:"oomScoreAdj"`
+	Env                    map[string]interface{} `json:"env"`
+	Startup                string                 `json:"startup"`
+	StartupMode            string                 `json:"startupMode"`
+	EggConfig              map[string]interface{} `json:"eggConfig"`
+	EggScripts             map[string]interface{} `json:"eggScripts"`
+	Installation           map[string]interface{} `json:"installation"`
+	SkipInstallationScript bool                   `json:"skipInstallationScript"`
+	ConfigFiles            interface{}            `json:"configFiles"`
+	BrandName              string                 `json:"brandName"`
+	StartAfterInstall      *bool                  `json:"startAfterInstall"`
+	Ports                  []PortMapping          `json:"ports"`
+	Mounts                 []MountMapping         `json:"mounts"`
 }
 
 type PortMapping struct {

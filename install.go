@@ -31,9 +31,13 @@ func (s *Service) handleInstallServer(message map[string]interface{}) {
 		s.sendConsoleOutput(serverID, fmt.Sprintf("\x1b[1;33m[!] Could not chown server path: %v\x1b[0m\n", err))
 	}
 
-	if err := s.runEggInstallation(serverID, serverPath, payload.Config); err != nil {
-		s.sendInstallFail(serverID, err.Error())
-		return
+	if payload.Config.SkipInstallationScript {
+		s.sendConsoleOutput(serverID, "\x1b[1;34m[*] Skipping egg installation script (migration file import mode).\x1b[0m\n")
+	} else {
+		if err := s.runEggInstallation(serverID, serverPath, payload.Config); err != nil {
+			s.sendInstallFail(serverID, err.Error())
+			return
+		}
 	}
 
 	if err := s.applyEggConfigFiles(serverID, serverPath, payload.Config); err != nil {
