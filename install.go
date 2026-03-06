@@ -389,6 +389,7 @@ func (s *Service) runEggInstallation(serverID int, serverPath string, cfg Server
 
 	scriptPath := filepath.Join(serverPath, ".cpanel_install.sh")
 	scriptBody := strings.ReplaceAll(script, "\r\n", "\n")
+	scriptBody = normalizeInstallationScript(scriptBody)
 	if !strings.HasSuffix(scriptBody, "\n") {
 		scriptBody += "\n"
 	}
@@ -437,6 +438,31 @@ func (s *Service) runEggInstallation(serverID int, serverPath string, cfg Server
 
 	s.sendConsoleOutput(serverID, "\x1b[1;32m[✓] Egg installation completed.\x1b[0m\n")
 	return nil
+}
+
+func normalizeInstallationScript(script string) string {
+	normalized := strings.ReplaceAll(script, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	for idx, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "mkdir ") && !strings.Contains(trimmed, " -p") && !strings.Contains(trimmed, "--parents") {
+			lines[idx] = strings.Replace(line, "mkdir ", "mkdir -p ", 1)
+			trimmed = strings.TrimSpace(lines[idx])
+		}
+
+		if strings.Contains(trimmed, "db.getSiblingDB('admin').createUser(") && !strings.Contains(trimmed, "|| true") {
+			lines[idx] = strings.TrimRight(line, " \t") + " || true"
+			trimmed = strings.TrimSpace(lines[idx])
+		}
+		if strings.Contains(trimmed, "db.getSiblingDB('admin').shutdownServer()") && !strings.Contains(trimmed, "|| true") {
+			lines[idx] = strings.TrimRight(line, " \t") + " || true"
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func resolveInstallationPayload(cfg ServerInstallConfig) map[string]interface{} {
