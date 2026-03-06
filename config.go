@@ -105,14 +105,27 @@ func loadConfig(configPath string) (Config, error) {
 	}
 
 	normalizedDNS := make([]string, 0, len(cfg.Docker.Network.DNS))
+	seenDNS := make(map[string]struct{})
 	for _, dns := range cfg.Docker.Network.DNS {
-		if value := strings.TrimSpace(dns); value != "" {
-			normalizedDNS = append(normalizedDNS, value)
+		value := strings.TrimSpace(dns)
+		if value == "" {
+			continue
 		}
+		lower := strings.ToLower(value)
+		// "auto"/"host"/"inherit" explicitly means "do not force --dns",
+		// allowing Docker daemon/host resolver settings to be used.
+		if lower == "auto" || lower == "host" || lower == "inherit" {
+			normalizedDNS = normalizedDNS[:0]
+			seenDNS = map[string]struct{}{}
+			break
+		}
+		if _, exists := seenDNS[value]; exists {
+			continue
+		}
+		seenDNS[value] = struct{}{}
+		normalizedDNS = append(normalizedDNS, value)
 	}
-	if len(normalizedDNS) == 0 {
-		normalizedDNS = append(normalizedDNS, defaultDockerDNS...)
-	}
+	// If empty, runtime containers inherit Docker daemon DNS instead of forcing public resolvers.
 	cfg.Docker.Network.DNS = normalizedDNS
 
 	if cfg.Docker.Network.EnableICC == nil {

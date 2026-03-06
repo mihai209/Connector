@@ -89,6 +89,9 @@ func (s *Service) Start() error {
 	bootInfo("repairing existing server volume permissions")
 	s.repairExistingServerPermissions()
 
+	bootInfo("repairing DNS for already running containers")
+	s.repairRunningContainersDNS()
+
 	bootInfo("starting sftp subsystem")
 	if err := s.startSFTPServer(); err != nil {
 		return fmt.Errorf("start sftp: %w", err)

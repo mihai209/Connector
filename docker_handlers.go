@@ -52,6 +52,7 @@ func (s *Service) executePowerAction(serverID int, action, stopCommand string) e
 		if _, err := runCommand("docker", "start", containerName); err != nil {
 			return err
 		}
+		s.repairServerContainerDNS(serverID)
 		time.Sleep(logAttachRetryDelay)
 		s.ensureServerLogStream(serverID, false, true)
 		return nil
@@ -72,6 +73,7 @@ func (s *Service) executePowerAction(serverID int, action, stopCommand string) e
 		if _, err := runCommand("docker", "restart", containerName); err != nil {
 			return err
 		}
+		s.repairServerContainerDNS(serverID)
 		time.Sleep(logAttachRetryDelay)
 		s.ensureServerLogStream(serverID, false, true)
 		return nil

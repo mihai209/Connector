@@ -48,8 +48,6 @@ const (
 	remoteDownloadTimeout                  = 8 * time.Minute
 )
 
-var defaultDockerDNS = []string{"1.1.1.1", "1.0.0.1"}
-
 type Config struct {
 	Panel struct {
 		URL            string   `json:"url"`

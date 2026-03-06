@@ -82,13 +82,18 @@ VOLUMES_PATH=/var/lib/cpanel/volumes \
       "network_mode": "cpanel_nw",
       "driver": "bridge",
       "interface": "172.18.0.1",
-      "dns": ["1.1.1.1", "1.0.0.1"],
+      "dns": [],
       "enable_icc": true,
       "network_mtu": 1500
     }
   }
 }
 ```
+
+`docker.network.dns` is optional:
+- `[]` (or omitted): inherit Docker daemon/host DNS (recommended default)
+- explicit values: force those resolvers in runtime/install containers
+- `"auto"` / `"host"` / `"inherit"`: alias for inherit mode
 
 ### Update Mode
 

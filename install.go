@@ -253,6 +253,7 @@ func (s *Service) createRuntimeContainer(serverID int, serverPath string, cfg Se
 		if _, err := runCommand("docker", "start", containerName); err != nil {
 			return "", err
 		}
+		s.repairServerContainerDNS(serverID)
 	}
 	return strings.TrimSpace(containerID), nil
 }
