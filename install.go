@@ -153,10 +153,8 @@ func (s *Service) createRuntimeContainer(serverID int, serverPath string, cfg Se
 	if networkMode != "" {
 		args = append(args, "--network", networkMode)
 	}
-	for _, dns := range s.cfg.Docker.Network.DNS {
-		if value := strings.TrimSpace(dns); value != "" {
-			args = append(args, "--dns", value)
-		}
+	for _, dns := range s.effectiveContainerDNSServers() {
+		args = append(args, "--dns", dns)
 	}
 	if s.cfg.Docker.TmpfsSize > 0 {
 		// Java/Netty/SQLite extract native libraries to /tmp and need execute permission.
@@ -424,10 +422,8 @@ func (s *Service) runEggInstallation(serverID int, serverPath string, cfg Server
 	if networkMode != "" {
 		args = append(args, "--network", networkMode)
 	}
-	for _, dns := range s.cfg.Docker.Network.DNS {
-		if value := strings.TrimSpace(dns); value != "" {
-			args = append(args, "--dns", value)
-		}
+	for _, dns := range s.effectiveContainerDNSServers() {
+		args = append(args, "--dns", dns)
 	}
 
 	for key, value := range cfg.Env {

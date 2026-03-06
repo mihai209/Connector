@@ -10,6 +10,7 @@ import (
 
 const (
 	serverContainerNamePrefix = "cpanel-"
+	dockerEmbeddedDNS         = "127.0.0.11"
 )
 
 func (s *Service) repairRunningContainersDNS() {
@@ -88,13 +89,45 @@ func (s *Service) repairContainerDNS(containerName string, servers []string) err
 }
 
 func (s *Service) resolveDNSServersForRepair() []string {
-	servers := normalizeDNSServers(s.cfg.Docker.Network.DNS)
-	if len(servers) > 0 {
-		return servers
+	servers := []string{dockerEmbeddedDNS}
+	seen := map[string]struct{}{dockerEmbeddedDNS: {}}
+
+	for _, value := range normalizeDNSServers(s.cfg.Docker.Network.DNS) {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		servers = append(servers, value)
 	}
 
-	servers = readHostDNSServers()
-	return normalizeDNSServers(servers)
+	// If no explicit DNS was configured, append host resolvers (if usable).
+	if len(servers) == 1 {
+		for _, value := range normalizeDNSServers(readHostDNSServers()) {
+			if _, exists := seen[value]; exists {
+				continue
+			}
+			seen[value] = struct{}{}
+			servers = append(servers, value)
+		}
+	}
+
+	return servers
+}
+
+// effectiveContainerDNSServers returns resolvers to pass at docker create/run time.
+// Keep Docker embedded DNS first so name resolution works even when public resolvers
+// are blocked in provider environments.
+func (s *Service) effectiveContainerDNSServers() []string {
+	servers := []string{dockerEmbeddedDNS}
+	seen := map[string]struct{}{dockerEmbeddedDNS: {}}
+	for _, value := range normalizeDNSServers(s.cfg.Docker.Network.DNS) {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		servers = append(servers, value)
+	}
+	return servers
 }
 
 func readHostDNSServers() []string {
