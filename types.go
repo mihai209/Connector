@@ -10,42 +10,42 @@ import (
 )
 
 const (
-	logBufferMaxLines                   = 500
-	logBufferMaxBytes                   = 1024 * 1024
-	defaultDiskUsageCacheTTLSeconds     = 10
-	notRunningNoticeCooldown            = 5 * time.Second
-	heartbeatInterval                   = 10 * time.Second
-	wsReconnectDelay                    = 5 * time.Second
-	wsReconnectMaxDelay                 = 60 * time.Second
-	wsReconnectResetAfter               = 45 * time.Second
-	wsWriteTimeout                      = 10 * time.Second
-	logAttachRetryDelay                 = 1 * time.Second
-	sftpAuthTimeout                     = 7 * time.Second
-	defaultVolumesPath                  = "/var/lib/cpanel/volumes"
-	defaultSFTPBindHost                 = "0.0.0.0"
-	defaultSFTPPort                     = 8312
-	defaultAPIPort                      = 2009
-	defaultSFTPHostKeyPath              = "./sftp_host_rsa.key"
-	defaultDockerNetworkName            = "cpanel_nw"
-	defaultDockerNetworkDriver          = "bridge"
-	defaultDockerNetworkInterface       = "172.18.0.1"
-	defaultDockerNetworkV4Subnet        = "172.18.0.0/16"
-	defaultDockerNetworkV4Gateway       = "172.18.0.1"
-	defaultDockerNetworkV6Subnet        = "fdba:17c8:6c94::/64"
-	defaultDockerNetworkV6Gateway       = "fdba:17c8:6c94::1011"
-	defaultDockerNetworkMTU             = int64(1500)
-	defaultContainerTmpfsSizeMB         = uint(100)
-	defaultContainerPidLimit            = int64(512)
-	defaultConsoleThrottleLines         = uint64(2000)
-	defaultConsoleThrottleIntervalMs    = uint64(100)
-	defaultWSReadLimitMB                = int64(128)
-	panelSFTPAuthPath                   = "/api/connector/sftp-auth"
-	serverStatsInterval                 = 2 * time.Second
-	commandRateWindow                   = 5 * time.Second
-	commandRateLimit                    = 40
-	maxEditableFileBytes          int64 = 5 * 1024 * 1024
-	maxRemoteDownloadBytes        int64 = 512 * 1024 * 1024
-	remoteDownloadTimeout               = 8 * time.Minute
+	logBufferMaxLines                      = 500
+	logBufferMaxBytes                      = 1024 * 1024
+	defaultDiskUsageCacheTTLSeconds        = 10
+	notRunningNoticeCooldown               = 5 * time.Second
+	heartbeatInterval                      = 10 * time.Second
+	wsReconnectDelay                       = 5 * time.Second
+	wsReconnectMaxDelay                    = 60 * time.Second
+	wsReconnectResetAfter                  = 45 * time.Second
+	wsWriteTimeout                         = 10 * time.Second
+	logAttachRetryDelay                    = 1 * time.Second
+	sftpAuthTimeout                        = 7 * time.Second
+	defaultVolumesPath                     = "/var/lib/cpanel/volumes"
+	defaultSFTPBindHost                    = "0.0.0.0"
+	defaultSFTPPort                        = 8312
+	defaultAPIPort                         = 2009
+	defaultSFTPHostKeyPath                 = "./sftp_host_rsa.key"
+	defaultDockerNetworkName               = "cpanel_nw"
+	defaultDockerNetworkDriver             = "bridge"
+	defaultDockerNetworkInterface          = "172.18.0.1"
+	defaultDockerNetworkV4Subnet           = "172.18.0.0/16"
+	defaultDockerNetworkV4Gateway          = "172.18.0.1"
+	defaultDockerNetworkV6Subnet           = "fdba:17c8:6c94::/64"
+	defaultDockerNetworkV6Gateway          = "fdba:17c8:6c94::1011"
+	defaultDockerNetworkMTU                = int64(1500)
+	defaultContainerTmpfsSizeMB            = uint(100)
+	defaultContainerPidLimit               = int64(512)
+	defaultConsoleThrottleLines            = uint64(2000)
+	defaultConsoleThrottleIntervalMs       = uint64(100)
+	defaultWSReadLimitMB                   = int64(128)
+	panelSFTPAuthPath                      = "/api/connector/sftp-auth"
+	serverStatsInterval                    = 2 * time.Second
+	commandRateWindow                      = 5 * time.Second
+	commandRateLimit                       = 40
+	maxEditableFileBytes             int64 = 5 * 1024 * 1024
+	maxRemoteDownloadBytes           int64 = 512 * 1024 * 1024
+	remoteDownloadTimeout                  = 8 * time.Minute
 )
 
 var defaultDockerDNS = []string{"1.1.1.1", "1.0.0.1"}
@@ -89,7 +89,7 @@ type Config struct {
 			ContainerUID int  `json:"container_uid"`
 			ContainerGID int  `json:"container_gid"`
 		} `json:"rootless"`
-		Network           struct {
+		Network struct {
 			Interface string   `json:"interface"`
 			DNS       []string `json:"dns"`
 			Name      string   `json:"name"`
@@ -133,16 +133,16 @@ type Config struct {
 }
 
 type Service struct {
-	cfg         Config
-	volumesPath string
-	crashPath   string
-	wsReadLimitMB int64
-	diskUsageCacheTTL       time.Duration
-	consoleThrottleEnabled  bool
-	consoleThrottleLines    uint64
-	consoleThrottleInterval time.Duration
-	consoleThrottleMu       sync.Mutex
-	consoleThrottle         map[int]ConsoleThrottleState
+	cfg                      Config
+	volumesPath              string
+	crashPath                string
+	wsReadLimitMB            int64
+	diskUsageCacheTTL        time.Duration
+	consoleThrottleEnabled   bool
+	consoleThrottleLines     uint64
+	consoleThrottleInterval  time.Duration
+	consoleThrottleMu        sync.Mutex
+	consoleThrottle          map[int]ConsoleThrottleState
 	downloadLimitBytesPerSec int64
 
 	wsConn    *websocket.Conn
@@ -193,25 +193,26 @@ type ServerInstallMessage struct {
 }
 
 type ServerInstallConfig struct {
-	Image          string                 `json:"image"`
-	Memory         int                    `json:"memory"`
-	CPU            int                    `json:"cpu"`
-	Disk           int                    `json:"disk"`
-	SwapLimit      int                    `json:"swapLimit"`
-	IOWeight       int                    `json:"ioWeight"`
-	PidsLimit      int                    `json:"pidsLimit"`
-	OOMKillDisable bool                   `json:"oomKillDisable"`
-	OOMScoreAdj    int                    `json:"oomScoreAdj"`
-	Env            map[string]interface{} `json:"env"`
-	Startup        string                 `json:"startup"`
-	StartupMode    string                 `json:"startupMode"`
-	EggConfig      map[string]interface{} `json:"eggConfig"`
-	EggScripts     map[string]interface{} `json:"eggScripts"`
-	Installation   map[string]interface{} `json:"installation"`
-	ConfigFiles    interface{}            `json:"configFiles"`
-	BrandName      string                 `json:"brandName"`
-	Ports          []PortMapping          `json:"ports"`
-	Mounts         []MountMapping         `json:"mounts"`
+	Image             string                 `json:"image"`
+	Memory            int                    `json:"memory"`
+	CPU               int                    `json:"cpu"`
+	Disk              int                    `json:"disk"`
+	SwapLimit         int                    `json:"swapLimit"`
+	IOWeight          int                    `json:"ioWeight"`
+	PidsLimit         int                    `json:"pidsLimit"`
+	OOMKillDisable    bool                   `json:"oomKillDisable"`
+	OOMScoreAdj       int                    `json:"oomScoreAdj"`
+	Env               map[string]interface{} `json:"env"`
+	Startup           string                 `json:"startup"`
+	StartupMode       string                 `json:"startupMode"`
+	EggConfig         map[string]interface{} `json:"eggConfig"`
+	EggScripts        map[string]interface{} `json:"eggScripts"`
+	Installation      map[string]interface{} `json:"installation"`
+	ConfigFiles       interface{}            `json:"configFiles"`
+	BrandName         string                 `json:"brandName"`
+	StartAfterInstall *bool                  `json:"startAfterInstall"`
+	Ports             []PortMapping          `json:"ports"`
+	Mounts            []MountMapping         `json:"mounts"`
 }
 
 type PortMapping struct {

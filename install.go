@@ -54,7 +54,12 @@ func (s *Service) handleInstallServer(message map[string]interface{}) {
 		return
 	}
 
-	containerID, err := s.createAndStartRuntimeContainer(serverID, serverPath, payload.Config)
+	startAfterInstall := true
+	if payload.Config.StartAfterInstall != nil {
+		startAfterInstall = *payload.Config.StartAfterInstall
+	}
+
+	containerID, err := s.createRuntimeContainer(serverID, serverPath, payload.Config, startAfterInstall)
 	if err != nil {
 		s.sendInstallFail(serverID, err.Error())
 		return
@@ -64,10 +69,14 @@ func (s *Service) handleInstallServer(message map[string]interface{}) {
 		"type":        "install_success",
 		"serverId":    serverID,
 		"containerId": strings.TrimSpace(containerID),
+		"started":     startAfterInstall,
+		"status":      map[bool]string{true: "running", false: "offline"}[startAfterInstall],
 	})
 
-	time.Sleep(logAttachRetryDelay)
-	s.ensureServerLogStream(serverID, false, true)
+	if startAfterInstall {
+		time.Sleep(logAttachRetryDelay)
+		s.ensureServerLogStream(serverID, false, true)
+	}
 }
 
 func (s *Service) sendInstallFail(serverID int, reason string) {
@@ -102,7 +111,7 @@ func (s *Service) chownServerPath(serverPath string) error {
 	return err
 }
 
-func (s *Service) createAndStartRuntimeContainer(serverID int, serverPath string, cfg ServerInstallConfig) (string, error) {
+func (s *Service) createRuntimeContainer(serverID int, serverPath string, cfg ServerInstallConfig, startAfterInstall bool) (string, error) {
 	containerName := fmt.Sprintf("cpanel-%d", serverID)
 	args := []string{"create", "--name", containerName}
 	networkMode := strings.TrimSpace(s.cfg.Docker.Network.Mode)
@@ -236,8 +245,10 @@ func (s *Service) createAndStartRuntimeContainer(serverID int, serverPath string
 		return "", err
 	}
 
-	if _, err := runCommand("docker", "start", containerName); err != nil {
-		return "", err
+	if startAfterInstall {
+		if _, err := runCommand("docker", "start", containerName); err != nil {
+			return "", err
+		}
 	}
 	return strings.TrimSpace(containerID), nil
 }
