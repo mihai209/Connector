@@ -148,7 +148,7 @@ func (s *Service) runDockerEventsLoop() {
 		if action == "start" {
 			go func(id int) {
 				time.Sleep(logAttachRetryDelay)
-				s.ensureServerLogStream(id, false, true)
+				s.ensureServerLogStream(id, false, true, false)
 			}(serverID)
 		}
 

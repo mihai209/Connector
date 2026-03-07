@@ -54,7 +54,7 @@ func (s *Service) executePowerAction(serverID int, action, stopCommand string) e
 		}
 		s.repairServerContainerDNS(serverID)
 		time.Sleep(logAttachRetryDelay)
-		s.ensureServerLogStream(serverID, false, true)
+		s.ensureServerLogStream(serverID, false, true, false)
 		return nil
 	case "stop":
 		if stopCommand != "" {
@@ -75,7 +75,7 @@ func (s *Service) executePowerAction(serverID int, action, stopCommand string) e
 		}
 		s.repairServerContainerDNS(serverID)
 		time.Sleep(logAttachRetryDelay)
-		s.ensureServerLogStream(serverID, false, true)
+		s.ensureServerLogStream(serverID, false, true, false)
 		return nil
 	case "kill":
 		if _, err := runCommand("docker", "kill", containerName); err != nil {
@@ -167,7 +167,7 @@ func (s *Service) handleServerLogs(message map[string]interface{}) {
 	if serverID <= 0 {
 		return
 	}
-	s.ensureServerLogStream(serverID, true, false)
+	s.ensureServerLogStream(serverID, true, false, true)
 }
 
 func (s *Service) handleCheckServerStatus(message map[string]interface{}) {

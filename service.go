@@ -92,6 +92,9 @@ func (s *Service) Start() error {
 	bootInfo("repairing DNS for already running containers")
 	s.repairRunningContainersDNS()
 
+	bootInfo("restoring console streams for already running containers")
+	s.restoreRunningConsoleStreams()
+
 	bootInfo("starting sftp subsystem")
 	if err := s.startSFTPServer(); err != nil {
 		return fmt.Errorf("start sftp: %w", err)

@@ -79,7 +79,7 @@ func (s *Service) handleInstallServer(message map[string]interface{}) {
 
 	if startAfterInstall {
 		time.Sleep(logAttachRetryDelay)
-		s.ensureServerLogStream(serverID, false, true)
+		s.ensureServerLogStream(serverID, false, true, false)
 	}
 }
 

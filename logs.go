@@ -248,7 +248,7 @@ func (s *Service) inspectContainerStats(serverID int) (bool, float64, int) {
 	return true, cpuPct, memMB
 }
 
-func (s *Service) ensureServerLogStream(serverID int, replayBufferedLogs bool, silentIfStopped bool) {
+func (s *Service) ensureServerLogStream(serverID int, replayBufferedLogs bool, silentIfStopped bool, includeHistoricalTail bool) {
 	hadBufferedLogs := false
 
 	s.streamsMu.Lock()
@@ -299,7 +299,7 @@ func (s *Service) ensureServerLogStream(serverID int, replayBufferedLogs bool, s
 		defer s.cleanupLogStream(serverID)
 		containerName := fmt.Sprintf("cpanel-%d", serverID)
 
-		if !hadBufferedLogs {
+		if includeHistoricalTail && !hadBufferedLogs {
 			if err := s.streamDockerOutput(ctx, serverID, "logs", "--tail", "500", containerName); err != nil && ctx.Err() == nil {
 				bootWarn("failed to stream historical logs server=%d error=%v", serverID, err)
 			}
@@ -311,6 +311,33 @@ func (s *Service) ensureServerLogStream(serverID int, replayBufferedLogs bool, s
 		}
 		s.cleanupStatsStream(serverID)
 	}()
+}
+
+func (s *Service) restoreRunningConsoleStreams() {
+	out, err := runCommand("docker", "ps", "--format", "{{.Names}}")
+	if err != nil {
+		bootWarn("failed to list running containers for console restore error=%v", err)
+		return
+	}
+
+	restored := 0
+	for _, line := range strings.Split(out, "\n") {
+		containerName := strings.TrimSpace(line)
+		if !strings.HasPrefix(containerName, "cpanel-") {
+			continue
+		}
+
+		serverIDRaw := strings.TrimSpace(strings.TrimPrefix(containerName, "cpanel-"))
+		serverID, parseErr := strconv.Atoi(serverIDRaw)
+		if parseErr != nil || serverID <= 0 {
+			continue
+		}
+
+		s.ensureServerLogStream(serverID, false, true, true)
+		restored++
+	}
+
+	bootInfo("restored console streams for running servers count=%d", restored)
 }
 
 func (s *Service) streamDockerAttach(ctx context.Context, serverID int, containerName string) error {
