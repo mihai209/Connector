@@ -246,6 +246,8 @@ func (s *Service) handleWSMessage(payload []byte) error {
 		s.dispatchWSHandler("extract_archive", func() { s.handleExtractArchive(envelope) })
 	case "download_file":
 		s.dispatchWSHandler("download_file", func() { s.handleDownloadFile(envelope) })
+	case "dependency_mirror_check":
+		s.dispatchWSHandler("dependency_mirror_check", func() { s.handleDependencyMirrorCheck(envelope) })
 	case "search_files":
 		s.dispatchWSHandler("search_files", func() { s.handleSearchFiles(envelope) })
 	case "list_files", "create_folder", "create_file", "rename_file", "delete_files", "set_permissions":
