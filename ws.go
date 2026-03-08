@@ -246,6 +246,8 @@ func (s *Service) handleWSMessage(payload []byte) error {
 		s.dispatchWSHandler("extract_archive", func() { s.handleExtractArchive(envelope) })
 	case "download_file":
 		s.dispatchWSHandler("download_file", func() { s.handleDownloadFile(envelope) })
+	case "search_files":
+		s.dispatchWSHandler("search_files", func() { s.handleSearchFiles(envelope) })
 	case "list_files", "create_folder", "create_file", "rename_file", "delete_files", "set_permissions":
 		s.dispatchWSHandler(messageType, func() { s.handleFilesAction(messageType, envelope) })
 	case "file_action", "server_file_action":
@@ -269,6 +271,9 @@ func (s *Service) dispatchFileActionAlias(envelope map[string]interface{}) bool 
 		action = strings.ToLower(strings.TrimSpace(asString(envelope["fileAction"])))
 	}
 	switch action {
+	case "search_files":
+		s.dispatchWSHandler("search_files", func() { s.handleSearchFiles(envelope) })
+		return true
 	case "list_files", "create_folder", "create_file", "rename_file", "delete_files", "set_permissions":
 		s.dispatchWSHandler(action, func() { s.handleFilesAction(action, envelope) })
 		return true

@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +21,10 @@ const (
 	fileHistoryDirName       = ".cpanel-history"
 	maxFileHistorySnapshots  = 20
 	maxReadableHistoryBytes  = 2 * maxEditableFileBytes
+	defaultSearchMaxResults  = 300
+	hardSearchMaxResults     = 1000
+	defaultSearchMaxDirs     = 1500
+	hardSearchMaxDirs        = 5000
 	archiveScanMaxEntries    = 256
 	archiveScanMaxTotalBytes = 8 * 1024 * 1024
 	archiveScanMaxEntryBytes = 256 * 1024
@@ -55,6 +61,8 @@ var archiveMinerMediumPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b2miners\b`),
 	regexp.MustCompile(`(?i)\bnicehash\b`),
 }
+
+var errFileSearchLimitReached = errors.New("file search limit reached")
 
 type cappedBuffer struct {
 	max int
@@ -793,6 +801,203 @@ func (s *Service) handleReadFileVersion(message map[string]interface{}) {
 		"filePath":  filePath,
 		"versionId": versionID,
 		"content":   string(raw),
+	})
+}
+
+func normalizeSearchFilterMode(raw string) string {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "files" || mode == "folders" {
+		return mode
+	}
+	return "all"
+}
+
+func normalizeSearchLimit(raw, defaultValue, maxValue int) int {
+	if raw <= 0 {
+		return defaultValue
+	}
+	if raw > maxValue {
+		return maxValue
+	}
+	return raw
+}
+
+func virtualServerPath(serverRootAbs, entryAbs string) string {
+	rel, err := filepath.Rel(serverRootAbs, entryAbs)
+	if err != nil {
+		return "/"
+	}
+	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	if rel == "" || rel == "." {
+		return "/"
+	}
+	if !strings.HasPrefix(rel, "/") {
+		return "/" + rel
+	}
+	return rel
+}
+
+func parentVirtualPath(pathValue string) string {
+	clean := filepath.ToSlash(filepath.Clean(pathValue))
+	parent := filepath.ToSlash(filepath.Dir(clean))
+	if parent == "." || parent == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(parent, "/") {
+		parent = "/" + parent
+	}
+	return parent
+}
+
+func (s *Service) handleSearchFiles(message map[string]interface{}) {
+	serverID := asInt(message["serverId"])
+	requestID := strings.TrimSpace(asString(message["requestId"]))
+	query := strings.TrimSpace(asString(message["query"]))
+	directory := strings.TrimSpace(asString(message["directory"]))
+	filterMode := normalizeSearchFilterMode(asString(message["filterMode"]))
+	maxResults := normalizeSearchLimit(asInt(message["maxResults"]), defaultSearchMaxResults, hardSearchMaxResults)
+	maxDirs := normalizeSearchLimit(asInt(message["maxDirectories"]), defaultSearchMaxDirs, hardSearchMaxDirs)
+
+	if serverID <= 0 {
+		return
+	}
+	if directory == "" {
+		directory = "/"
+	}
+
+	sendResult := func(success bool, payload map[string]interface{}) {
+		result := map[string]interface{}{
+			"type":           "file_search_result",
+			"serverId":       serverID,
+			"requestId":      requestID,
+			"directory":      directory,
+			"query":          query,
+			"filterMode":     filterMode,
+			"maxResults":     maxResults,
+			"maxDirectories": maxDirs,
+			"success":        success,
+		}
+		for key, value := range payload {
+			result[key] = value
+		}
+		_ = s.sendJSON(result)
+	}
+
+	if query == "" {
+		sendResult(true, map[string]interface{}{
+			"results":            []map[string]interface{}{},
+			"truncated":          false,
+			"scannedDirectories": 0,
+			"durationMs":         0,
+		})
+		return
+	}
+
+	searchRoot, err := safeServerPath(s.volumesPath, serverID, directory)
+	if err != nil {
+		sendResult(false, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+	searchRootInfo, err := os.Stat(searchRoot)
+	if err != nil || !searchRootInfo.IsDir() {
+		sendResult(false, map[string]interface{}{
+			"error": "directory not found",
+		})
+		return
+	}
+
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendResult(false, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	searchNeedle := strings.ToLower(query)
+	results := make([]map[string]interface{}, 0, maxResults)
+	truncated := false
+	scannedDirectories := 0
+	startedAt := time.Now()
+
+	walkErr := filepath.WalkDir(searchRoot, func(entryPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+
+		name := strings.TrimSpace(d.Name())
+		if name == "" {
+			return nil
+		}
+		if d.IsDir() {
+			if name == fileHistoryDirName {
+				return filepath.SkipDir
+			}
+			scannedDirectories++
+			if scannedDirectories > maxDirs {
+				truncated = true
+				return errFileSearchLimitReached
+			}
+		}
+
+		if !strings.Contains(strings.ToLower(name), searchNeedle) {
+			return nil
+		}
+
+		isDirectory := d.IsDir()
+		includeByFilter := filterMode == "all" ||
+			(filterMode == "files" && !isDirectory) ||
+			(filterMode == "folders" && isDirectory)
+		if !includeByFilter {
+			return nil
+		}
+
+		virtualPath := virtualServerPath(serverRoot, entryPath)
+		if virtualPath == "/" {
+			return nil
+		}
+
+		results = append(results, map[string]interface{}{
+			"name":        name,
+			"path":        virtualPath,
+			"parentPath":  parentVirtualPath(virtualPath),
+			"isDirectory": isDirectory,
+		})
+		if len(results) >= maxResults {
+			truncated = true
+			return errFileSearchLimitReached
+		}
+		return nil
+	})
+
+	if walkErr != nil && !errors.Is(walkErr, errFileSearchLimitReached) {
+		sendResult(false, map[string]interface{}{
+			"error":              walkErr.Error(),
+			"results":            []map[string]interface{}{},
+			"truncated":          false,
+			"scannedDirectories": scannedDirectories,
+		})
+		return
+	}
+
+	sort.SliceStable(results, func(i, j int) bool {
+		leftPath := strings.ToLower(asString(results[i]["path"]))
+		rightPath := strings.ToLower(asString(results[j]["path"]))
+		if leftPath == rightPath {
+			leftName := strings.ToLower(asString(results[i]["name"]))
+			rightName := strings.ToLower(asString(results[j]["name"]))
+			return leftName < rightName
+		}
+		return leftPath < rightPath
+	})
+
+	sendResult(true, map[string]interface{}{
+		"results":            results,
+		"truncated":          truncated,
+		"scannedDirectories": scannedDirectories,
+		"durationMs":         time.Since(startedAt).Milliseconds(),
 	})
 }
 
