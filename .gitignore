@@ -3,3 +3,9 @@ config.json
 *.key
 *.pem
 *.log
+alerts.json
+*.release.json
+*.version.json
+*.test.release.json
+connector-go-test
+.env

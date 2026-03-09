@@ -20,6 +20,31 @@ type connectorVersionFeed struct {
 	Tag           string `json:"tag"`
 }
 
+func detectCurrentConnectorVersion() (string, updaterState, string) {
+	execPath, err := resolveExecutablePath()
+	if err != nil {
+		return firstNonEmpty(strings.TrimSpace(ConnectorVersion), "unknown"), updaterState{}, ""
+	}
+	state := loadUpdaterState(execPath)
+	return effectiveConnectorVersionLabel(state), state, execPath
+}
+
+func printConnectorVersionDetails() {
+	current, state, execPath := detectCurrentConnectorVersion()
+	fmt.Printf("Connector version: %s\n", current)
+	fmt.Printf("Build version: %s\n", firstNonEmpty(strings.TrimSpace(ConnectorVersion), "unknown"))
+	if label := strings.TrimSpace(updaterStateVersionLabel(state)); label != "" {
+		fmt.Printf("Tracked release: %s\n", label)
+	}
+	if installedAt := strings.TrimSpace(state.InstalledAt); installedAt != "" {
+		fmt.Printf("Installed at: %s\n", installedAt)
+	}
+	if execPath != "" {
+		fmt.Printf("Executable: %s\n", execPath)
+		fmt.Printf("Update state file: %s\n", updaterStatePath(execPath))
+	}
+}
+
 func reportConnectorVersionStatus() {
 	latest, err := fetchLatestConnectorVersion()
 	if err != nil {
@@ -27,14 +52,15 @@ func reportConnectorVersionStatus() {
 		return
 	}
 
-	comparison := compareVersionStrings(ConnectorVersion, latest)
+	currentVersion, _, _ := detectCurrentConnectorVersion()
+	comparison := compareVersionStrings(currentVersion, latest)
 	switch {
 	case comparison < 0:
-		bootWarn("connector update available current=%s latest=%s", ConnectorVersion, latest)
+		bootWarn("connector update available current=%s latest=%s", currentVersion, latest)
 	case comparison == 0:
-		bootInfo("connector version up to date current=%s", ConnectorVersion)
+		bootInfo("connector version up to date current=%s", currentVersion)
 	default:
-		bootInfo("connector version ahead of feed current=%s latest=%s", ConnectorVersion, latest)
+		bootInfo("connector version ahead of feed current=%s latest=%s", currentVersion, latest)
 	}
 }
 

@@ -44,6 +44,41 @@ type updaterState struct {
 
 var semverLikeRegex = regexp.MustCompile(`v?\d+\.\d+\.\d+(?:[-+._][0-9a-zA-Z.-]+)?`)
 
+func updaterStateVersionLabel(state updaterState) string {
+	return firstNonEmpty(state.ReleaseTag, state.ReleaseName)
+}
+
+func hasUpdaterState(state updaterState) bool {
+	return strings.TrimSpace(updaterStateVersionLabel(state)) != "" ||
+		strings.TrimSpace(state.AssetURL) != "" ||
+		strings.TrimSpace(state.AssetName) != "" ||
+		strings.TrimSpace(state.InstalledAt) != ""
+}
+
+func effectiveConnectorVersionLabel(state updaterState) string {
+	buildLabel := strings.TrimSpace(ConnectorVersion)
+	stateLabel := strings.TrimSpace(updaterStateVersionLabel(state))
+	if stateLabel == "" {
+		if buildLabel == "" {
+			return "unknown"
+		}
+		return buildLabel
+	}
+
+	buildComparable := extractComparableVersion(buildLabel)
+	stateComparable := extractComparableVersion(stateLabel)
+	switch {
+	case buildComparable == "":
+		return stateLabel
+	case stateComparable == "":
+		return buildLabel
+	case compareVersionStrings(buildComparable, stateComparable) >= 0:
+		return buildLabel
+	default:
+		return stateLabel
+	}
+}
+
 func runInteractiveSelfUpdate() error {
 	fmt.Printf("Checking updates from %s ...\n", defaultConnectorReleasesPage)
 	execPath, err := resolveExecutablePath()
@@ -58,34 +93,35 @@ func runInteractiveSelfUpdate() error {
 
 	releaseLabel := firstNonEmpty(release.TagName, release.Name, "unknown")
 	state := loadUpdaterState(execPath)
+	currentVersionLabel := effectiveConnectorVersionLabel(state)
 	if isReleaseAlreadyInstalled(state, release) {
-		fmt.Printf("Already up to date (tracked by updater). current=%s latest=%s\n", ConnectorVersion, releaseLabel)
+		fmt.Printf("Already up to date (tracked by updater). current=%s latest=%s\n", currentVersionLabel, releaseLabel)
 		return nil
 	}
 
 	latestComparable := extractComparableVersion(firstNonEmpty(release.TagName, release.Name))
-	currentComparable := extractComparableVersion(ConnectorVersion)
+	currentComparable := extractComparableVersion(currentVersionLabel)
 	latestNormalized := normalizeVersionString(firstNonEmpty(release.TagName, release.Name))
-	currentNormalized := normalizeVersionString(ConnectorVersion)
+	currentNormalized := normalizeVersionString(currentVersionLabel)
 	if latestComparable != "" && currentComparable != "" {
 		cmp := compareVersionStrings(currentComparable, latestComparable)
 		if cmp > 0 {
-			fmt.Printf("Already up to date. current=%s latest=%s\n", ConnectorVersion, releaseLabel)
+			fmt.Printf("Already up to date. current=%s latest=%s\n", currentVersionLabel, releaseLabel)
 			return nil
 		}
 		if cmp == 0 {
 			// Numeric versions are equal. Keep "up to date" only when labels are effectively equivalent.
 			if latestNormalized == "" || strings.EqualFold(latestNormalized, currentNormalized) || strings.HasPrefix(latestNormalized, currentNormalized+".") {
-				fmt.Printf("Already up to date. current=%s latest=%s\n", ConnectorVersion, releaseLabel)
+				fmt.Printf("Already up to date. current=%s latest=%s\n", currentVersionLabel, releaseLabel)
 				return nil
 			}
 		}
 	} else if latestNormalized != "" && strings.EqualFold(latestNormalized, currentNormalized) {
-		fmt.Printf("Already up to date. current=%s latest=%s\n", ConnectorVersion, releaseLabel)
+		fmt.Printf("Already up to date. current=%s latest=%s\n", currentVersionLabel, releaseLabel)
 		return nil
 	}
 
-	fmt.Printf("Update available: current=%s latest=%s\n", ConnectorVersion, releaseLabel)
+	fmt.Printf("Update available: current=%s latest=%s\n", currentVersionLabel, releaseLabel)
 	fmt.Printf("Release page: %s\n", firstNonEmpty(release.HTMLURL, defaultConnectorReleasesPage))
 
 	asset := selectBestAsset(release.Assets)
@@ -287,14 +323,92 @@ func updaterStatePath(execPath string) string {
 	return execPath + ".release.json"
 }
 
-func loadUpdaterState(execPath string) updaterState {
+func legacyUpdaterStatePaths(execPath string) []string {
+	execPath = strings.TrimSpace(execPath)
+	dir := strings.TrimSpace(filepath.Dir(execPath))
+	candidates := []string{
+		execPath + ".version.json",
+		execPath + ".update.json",
+		execPath + ".updater.json",
+		execPath + ".state.json",
+		execPath + ".bak.release.json",
+		execPath + ".bak.version.json",
+	}
+	if dir != "" && dir != "." {
+		candidates = append(candidates,
+			filepath.Join(dir, "connector-go.release.json"),
+			filepath.Join(dir, "connector-go.version.json"),
+			filepath.Join(dir, ".connector-go.release.json"),
+		)
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		clean := strings.TrimSpace(candidate)
+		if clean == "" {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
+func decodeUpdaterState(raw []byte) updaterState {
 	var state updaterState
-	raw, err := os.ReadFile(updaterStatePath(execPath))
-	if err != nil {
+	_ = json.Unmarshal(raw, &state)
+	if hasUpdaterState(state) {
 		return state
 	}
-	_ = json.Unmarshal(raw, &state)
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return updaterState{}
+	}
+
+	state = updaterState{
+		ReleaseTag:  strings.TrimSpace(firstNonEmpty(asString(payload["releaseTag"]), asString(payload["tag"]), asString(payload["version"]), asString(payload["latestVersion"]), asString(payload["latest"]), asString(payload["currentVersion"]))),
+		ReleaseName: strings.TrimSpace(firstNonEmpty(asString(payload["releaseName"]), asString(payload["name"]), asString(payload["title"]))),
+		AssetURL:    strings.TrimSpace(firstNonEmpty(asString(payload["assetUrl"]), asString(payload["downloadUrl"]), asString(payload["url"]))),
+		AssetName:   strings.TrimSpace(firstNonEmpty(asString(payload["assetName"]), asString(payload["fileName"]), asString(payload["asset"]))),
+		InstalledAt: strings.TrimSpace(firstNonEmpty(asString(payload["installedAt"]), asString(payload["updatedAt"]), asString(payload["time"]), asString(payload["timestamp"]))),
+	}
+	if !hasUpdaterState(state) {
+		return updaterState{}
+	}
 	return state
+}
+
+func loadUpdaterStateFromPath(path string) updaterState {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return updaterState{}
+	}
+	return decodeUpdaterState(raw)
+}
+
+func loadUpdaterState(execPath string) updaterState {
+	primaryPath := updaterStatePath(execPath)
+	primaryState := loadUpdaterStateFromPath(primaryPath)
+	if hasUpdaterState(primaryState) {
+		return primaryState
+	}
+
+	for _, legacyPath := range legacyUpdaterStatePaths(execPath) {
+		legacyState := loadUpdaterStateFromPath(legacyPath)
+		if !hasUpdaterState(legacyState) {
+			continue
+		}
+		// Auto-migrate legacy updater state format/location.
+		saveUpdaterState(execPath, legacyState)
+		return legacyState
+	}
+
+	return updaterState{}
 }
 
 func saveUpdaterState(execPath string, state updaterState) {

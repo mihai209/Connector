@@ -7,97 +7,119 @@ import (
 	"strings"
 )
 
-func ensurePathWithinRoot(root, target string) error {
+func normalizePathWithinRoot(root, target string) (string, error) {
 	cleanRoot := filepath.Clean(root)
 	cleanTarget := filepath.Clean(target)
+	if !filepath.IsAbs(cleanRoot) {
+		absRoot, err := filepath.Abs(cleanRoot)
+		if err != nil {
+			return "", errors.New("access denied: invalid root")
+		}
+		cleanRoot = filepath.Clean(absRoot)
+	}
+	if !filepath.IsAbs(cleanTarget) {
+		cleanTarget = filepath.Clean(filepath.Join(cleanRoot, cleanTarget))
+	}
 
 	rel, err := filepath.Rel(cleanRoot, cleanTarget)
 	if err != nil {
-		return errors.New("access denied: invalid path")
+		return "", errors.New("access denied: invalid path")
 	}
 	rel = strings.TrimSpace(rel)
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return errors.New("access denied: path escapes root")
+		return "", errors.New("access denied: path escapes root")
 	}
-	return nil
+	return cleanTarget, nil
 }
 
 func secureStat(root, target string) (os.FileInfo, error) {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return nil, err
 	}
-	return os.Stat(target)
+	return os.Stat(safePath)
 }
 
 func secureReadFile(root, target string) ([]byte, error) {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return nil, err
 	}
-	return os.ReadFile(target)
+	return os.ReadFile(safePath)
 }
 
 func secureWriteFile(root, target string, data []byte, perm os.FileMode) error {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(target, data, perm)
+	return os.WriteFile(safePath, data, perm)
 }
 
 func secureReadDir(root, target string) ([]os.DirEntry, error) {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return nil, err
 	}
-	return os.ReadDir(target)
+	return os.ReadDir(safePath)
 }
 
 func secureMkdirAll(root, target string, perm os.FileMode) error {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return err
 	}
-	return os.MkdirAll(target, perm)
+	return os.MkdirAll(safePath, perm)
 }
 
 func secureOpen(root, target string) (*os.File, error) {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return nil, err
 	}
-	return os.Open(target)
+	return os.Open(safePath)
 }
 
 func secureOpenFile(root, target string, flag int, perm os.FileMode) (*os.File, error) {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return nil, err
 	}
-	return os.OpenFile(target, flag, perm)
+	return os.OpenFile(safePath, flag, perm)
 }
 
 func secureRename(root, src, dst string) error {
-	if err := ensurePathWithinRoot(root, src); err != nil {
+	safeSrc, err := normalizePathWithinRoot(root, src)
+	if err != nil {
 		return err
 	}
-	if err := ensurePathWithinRoot(root, dst); err != nil {
+	safeDst, err := normalizePathWithinRoot(root, dst)
+	if err != nil {
 		return err
 	}
-	return os.Rename(src, dst)
+	return os.Rename(safeSrc, safeDst)
 }
 
 func secureRemove(root, target string) error {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return err
 	}
-	return os.Remove(target)
+	return os.Remove(safePath)
 }
 
 func secureRemoveAll(root, target string) error {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return err
 	}
-	return os.RemoveAll(target)
+	return os.RemoveAll(safePath)
 }
 
 func secureChmod(root, target string, mode os.FileMode) error {
-	if err := ensurePathWithinRoot(root, target); err != nil {
+	safePath, err := normalizePathWithinRoot(root, target)
+	if err != nil {
 		return err
 	}
-	return os.Chmod(target, mode)
+	return os.Chmod(safePath, mode)
 }

@@ -106,7 +106,7 @@ func (s *Service) handleLogCleanup(message map[string]interface{}) {
 			if compressOld {
 				if gzPath, gzErr := compressFileToGzip(serverRoot, rotatedPath); gzErr == nil {
 					_ = secureRemove(serverRoot, rotatedPath)
-					_ = os.Chtimes(gzPath, info.ModTime(), info.ModTime())
+					_ = gzPath
 				}
 			}
 		}

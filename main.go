@@ -14,6 +14,10 @@ func main() {
 			}
 			return
 		}
+		if arg == "--version" || arg == "-v" || arg == "version" {
+			printConnectorVersionDetails()
+			return
+		}
 	}
 
 	configPath := envOrDefault("CONNECTOR_CONFIG", "./config.json")

@@ -46,10 +46,7 @@ func buildSFTPHostKeyCallback(message map[string]interface{}) (ssh.HostKeyCallba
 		}, nil
 	}
 
-	candidates := asStringSlice(message["knownHostsFiles"])
-	if single := strings.TrimSpace(asString(message["knownHostsFile"])); single != "" {
-		candidates = append(candidates, single)
-	}
+	candidates := make([]string, 0, 3)
 	if homeDir, err := os.UserHomeDir(); err == nil && strings.TrimSpace(homeDir) != "" {
 		candidates = append(candidates, filepath.Join(homeDir, ".ssh", "known_hosts"))
 	}
