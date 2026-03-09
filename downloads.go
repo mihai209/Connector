@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -37,6 +40,56 @@ func sanitizeDownloadBasename(name string) string {
 		clean = clean[:128]
 	}
 	return clean
+}
+
+func isBlockedDownloadIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	return !ip.IsGlobalUnicast()
+}
+
+func validateRemoteDownloadURL(ctx context.Context, parsedURL *url.URL) error {
+	if parsedURL == nil {
+		return errors.New("invalid download URL")
+	}
+	if parsedURL.User != nil {
+		return errors.New("download URL must not include credentials")
+	}
+
+	scheme := strings.ToLower(strings.TrimSpace(parsedURL.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return errors.New("only http/https URLs are allowed")
+	}
+
+	host := strings.TrimSpace(parsedURL.Hostname())
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return errors.New("download URL host is blocked")
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedDownloadIP(ip) {
+			return errors.New("download URL host resolves to blocked IP range")
+		}
+		return nil
+	}
+
+	resolveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	records, err := net.DefaultResolver.LookupIPAddr(resolveCtx, host)
+	if err != nil || len(records) == 0 {
+		return errors.New("download URL host cannot be resolved")
+	}
+	for _, record := range records {
+		if isBlockedDownloadIP(record.IP) {
+			return errors.New("download URL host resolves to blocked IP range")
+		}
+	}
+	return nil
 }
 
 func (s *Service) sendDownloadFileResult(serverID int, requestID string, success bool, errMsg string, fileName string, filePath string, size int64) {
@@ -81,13 +134,8 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 		sendErr("invalid download URL")
 		return
 	}
-	scheme := strings.ToLower(strings.TrimSpace(parsedURL.Scheme))
-	if scheme != "http" && scheme != "https" {
-		sendErr("only http/https URLs are allowed")
-		return
-	}
-	if strings.TrimSpace(parsedURL.Host) == "" {
-		sendErr("invalid download URL host")
+	if err := validateRemoteDownloadURL(context.Background(), parsedURL); err != nil {
+		sendErr(err.Error())
 		return
 	}
 
@@ -103,7 +151,12 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 		sendErr(err.Error())
 		return
 	}
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
+	if err := secureMkdirAll(serverRoot, targetDir, 0o755); err != nil {
 		sendErr(err.Error())
 		return
 	}
@@ -114,13 +167,13 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 		return
 	}
 
-	if info, statErr := os.Stat(targetPath); statErr == nil && info.IsDir() {
+	if info, statErr := secureStat(serverRoot, targetPath); statErr == nil && info.IsDir() {
 		sendErr("target path is a directory")
 		return
 	}
 
 	tmpPath := targetPath + ".cpanel-downloading"
-	_ = os.Remove(tmpPath)
+	_ = secureRemove(serverRoot, tmpPath)
 
 	req, err := http.NewRequest(http.MethodGet, parsedURL.String(), nil)
 	if err != nil {
@@ -129,7 +182,29 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 	}
 	req.Header.Set("User-Agent", "CPanel-Connector-Go/1.0")
 
-	client := &http.Client{Timeout: remoteDownloadTimeout}
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, _, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			if err := validateRemoteDownloadURL(ctx, &url.URL{Scheme: "http", Host: host}); err != nil {
+				return nil, err
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}
+	client := &http.Client{
+		Timeout:   remoteDownloadTimeout,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			return validateRemoteDownloadURL(req.Context(), req.URL)
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		sendErr("download request failed: %v", err)
@@ -146,7 +221,7 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 		return
 	}
 
-	out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	out, err := secureOpenFile(serverRoot, tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		sendErr(err.Error())
 		return
@@ -160,23 +235,23 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 	closeErr := out.Close()
 
 	if copyErr != nil {
-		_ = os.Remove(tmpPath)
+		_ = secureRemove(serverRoot, tmpPath)
 		sendErr("failed while downloading file: %v", copyErr)
 		return
 	}
 	if closeErr != nil {
-		_ = os.Remove(tmpPath)
+		_ = secureRemove(serverRoot, tmpPath)
 		sendErr("failed to finalize downloaded file: %v", closeErr)
 		return
 	}
 	if written > maxRemoteDownloadBytes {
-		_ = os.Remove(tmpPath)
+		_ = secureRemove(serverRoot, tmpPath)
 		sendErr("file too large (max %d MB)", maxRemoteDownloadBytes/(1024*1024))
 		return
 	}
 
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := secureRename(serverRoot, tmpPath, targetPath); err != nil {
+		_ = secureRemove(serverRoot, tmpPath)
 		sendErr("failed to move downloaded file into place: %v", err)
 		return
 	}
@@ -192,10 +267,10 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 }
 
 type rateLimitedReader struct {
-	reader            io.Reader
-	limitBytesPerSec  int64
-	start             time.Time
-	bytes             int64
+	reader           io.Reader
+	limitBytesPerSec int64
+	start            time.Time
+	bytes            int64
 }
 
 func newRateLimitedReader(reader io.Reader, limitBytesPerSec int64) io.Reader {
@@ -220,7 +295,7 @@ func (r *rateLimitedReader) Read(p []byte) (int, error) {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	expected := time.Duration(float64(r.bytes)/float64(r.limitBytesPerSec)*float64(time.Second))
+	expected := time.Duration(float64(r.bytes) / float64(r.limitBytesPerSec) * float64(time.Second))
 	if expected > elapsed {
 		time.Sleep(expected - elapsed)
 	}

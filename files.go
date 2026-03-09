@@ -483,12 +483,17 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 		sendErr(err.Error())
 		return
 	}
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
 	archivePath, err := safeJoin(currentDir, name)
 	if err != nil {
 		sendErr(err.Error())
 		return
 	}
-	stats, err := os.Stat(archivePath)
+	stats, err := secureStat(serverRoot, archivePath)
 	if err != nil {
 		sendErr("archive file not found")
 		return
@@ -517,7 +522,7 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 		sendErr(err.Error())
 		return
 	}
-	if err := os.MkdirAll(targetDirAbs, 0o755); err != nil {
+	if err := secureMkdirAll(serverRoot, targetDirAbs, 0o755); err != nil {
 		sendErr(err.Error())
 		return
 	}
@@ -558,7 +563,7 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 		}
 		_ = s.sendJSON(result)
 
-		fileList, listErr := listDirectoryEntries(targetDirAbs)
+		fileList, listErr := listDirectoryEntries(serverRoot, targetDirAbs)
 		if listErr == nil {
 			_ = s.sendJSON(map[string]interface{}{
 				"type":      "file_list",
@@ -585,8 +590,13 @@ func (s *Service) handleReadFile(message map[string]interface{}) {
 		sendErr(err.Error())
 		return
 	}
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
 
-	stat, err := os.Stat(absPath)
+	stat, err := secureStat(serverRoot, absPath)
 	if err != nil {
 		sendErr(err.Error())
 		return
@@ -600,7 +610,7 @@ func (s *Service) handleReadFile(message map[string]interface{}) {
 		return
 	}
 
-	raw, err := os.ReadFile(absPath)
+	raw, err := secureReadFile(serverRoot, absPath)
 	if err != nil {
 		sendErr(err.Error())
 		return
@@ -632,8 +642,13 @@ func (s *Service) handleWriteFile(message map[string]interface{}) {
 		sendErr(err.Error())
 		return
 	}
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
 
-	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+	if err := secureMkdirAll(serverRoot, filepath.Dir(absPath), 0o755); err != nil {
 		sendErr(err.Error())
 		return
 	}
@@ -651,7 +666,7 @@ func (s *Service) handleWriteFile(message map[string]interface{}) {
 	}
 
 	s.createFileHistorySnapshot(serverID, filePath, absPath)
-	if err := os.WriteFile(absPath, payload, 0o644); err != nil {
+	if err := secureWriteFile(serverRoot, absPath, payload, 0o644); err != nil {
 		sendErr(err.Error())
 		return
 	}
@@ -678,8 +693,13 @@ func (s *Service) handleListFileVersions(message map[string]interface{}) {
 		sendErr(err.Error())
 		return
 	}
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
 
-	entries, err := os.ReadDir(historyDir)
+	entries, err := secureReadDir(serverRoot, historyDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			_ = s.sendJSON(map[string]interface{}{
@@ -759,6 +779,11 @@ func (s *Service) handleReadFileVersion(message map[string]interface{}) {
 		sendErr(err.Error())
 		return
 	}
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
 
 	if strings.Contains(versionID, "/") || strings.Contains(versionID, "\\") {
 		sendErr("invalid version identifier")
@@ -775,7 +800,7 @@ func (s *Service) handleReadFileVersion(message map[string]interface{}) {
 		return
 	}
 
-	stats, err := os.Stat(versionPath)
+	stats, err := secureStat(serverRoot, versionPath)
 	if err != nil {
 		sendErr("version not found")
 		return
@@ -789,7 +814,7 @@ func (s *Service) handleReadFileVersion(message map[string]interface{}) {
 		return
 	}
 
-	raw, err := os.ReadFile(versionPath)
+	raw, err := secureReadFile(serverRoot, versionPath)
 	if err != nil {
 		sendErr(err.Error())
 		return
@@ -900,18 +925,17 @@ func (s *Service) handleSearchFiles(message map[string]interface{}) {
 		})
 		return
 	}
-	searchRootInfo, err := os.Stat(searchRoot)
-	if err != nil || !searchRootInfo.IsDir() {
-		sendResult(false, map[string]interface{}{
-			"error": "directory not found",
-		})
-		return
-	}
-
 	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
 	if err != nil {
 		sendResult(false, map[string]interface{}{
 			"error": err.Error(),
+		})
+		return
+	}
+	searchRootInfo, err := secureStat(serverRoot, searchRoot)
+	if err != nil || !searchRootInfo.IsDir() {
+		sendResult(false, map[string]interface{}{
+			"error": "directory not found",
 		})
 		return
 	}
@@ -1021,6 +1045,11 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 		sendErr(err.Error())
 		return
 	}
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
 
 	switch action {
 	case "rename_file":
@@ -1034,15 +1063,15 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 			sendErr(err.Error())
 			return
 		}
-		if _, err := os.Stat(srcPath); err != nil {
+		if _, err := secureStat(serverRoot, srcPath); err != nil {
 			sendErr("source file or folder not found")
 			return
 		}
-		if _, err := os.Stat(dstPath); err == nil {
+		if _, err := secureStat(serverRoot, dstPath); err == nil {
 			sendErr("a file or folder with that name already exists")
 			return
 		}
-		if err := os.Rename(srcPath, dstPath); err != nil {
+		if err := secureRename(serverRoot, srcPath, dstPath); err != nil {
 			sendErr(err.Error())
 			return
 		}
@@ -1052,7 +1081,7 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 			if err != nil {
 				continue
 			}
-			_ = os.RemoveAll(targetPath)
+			_ = secureRemoveAll(serverRoot, targetPath)
 		}
 	case "set_permissions":
 		if !regexpPerm.MatchString(permissions) {
@@ -1065,7 +1094,7 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 			return
 		}
 		mode, _ := strconv.ParseUint(permissions, 8, 32)
-		if err := os.Chmod(targetPath, os.FileMode(mode)); err != nil {
+		if err := secureChmod(serverRoot, targetPath, os.FileMode(mode)); err != nil {
 			sendErr(err.Error())
 			return
 		}
@@ -1075,11 +1104,11 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 			sendErr(err.Error())
 			return
 		}
-		if _, err := os.Stat(targetPath); err == nil {
+		if _, err := secureStat(serverRoot, targetPath); err == nil {
 			sendErr("folder or file already exists")
 			return
 		}
-		if err := os.MkdirAll(targetPath, 0o755); err != nil {
+		if err := secureMkdirAll(serverRoot, targetPath, 0o755); err != nil {
 			sendErr(err.Error())
 			return
 		}
@@ -1090,15 +1119,15 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 			sendErr(err.Error())
 			return
 		}
-		if _, err := os.Stat(targetPath); err == nil {
+		if _, err := secureStat(serverRoot, targetPath); err == nil {
 			sendErr("folder or file already exists")
 			return
 		}
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		if err := secureMkdirAll(serverRoot, filepath.Dir(targetPath), 0o755); err != nil {
 			sendErr(err.Error())
 			return
 		}
-		f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		f, err := secureOpenFile(serverRoot, targetPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err != nil {
 			sendErr(err.Error())
 			return
@@ -1106,13 +1135,13 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 		_ = f.Close()
 		_, _ = runCommand("chown", "-R", s.chownUser(), targetPath)
 	case "list_files":
-		if _, err := os.Stat(currentDir); err != nil {
+		if _, err := secureStat(serverRoot, currentDir); err != nil {
 			sendErr("directory not found")
 			return
 		}
 	}
 
-	fileList, err := listDirectoryEntries(currentDir)
+	fileList, err := listDirectoryEntries(serverRoot, currentDir)
 	if err != nil {
 		sendErr(err.Error())
 		return
@@ -1126,8 +1155,8 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 	})
 }
 
-func listDirectoryEntries(dir string) ([]FileListEntry, error) {
-	entries, err := os.ReadDir(dir)
+func listDirectoryEntries(serverRoot, dir string) ([]FileListEntry, error) {
+	entries, err := secureReadDir(serverRoot, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -1137,8 +1166,11 @@ func listDirectoryEntries(dir string) ([]FileListEntry, error) {
 		if entry.Name() == fileHistoryDirName {
 			continue
 		}
-		fullPath := filepath.Join(dir, entry.Name())
-		stats, err := os.Stat(fullPath)
+		fullPath, joinErr := safeJoin(dir, entry.Name())
+		if joinErr != nil {
+			continue
+		}
+		stats, err := secureStat(serverRoot, fullPath)
 		if err != nil {
 			continue
 		}
@@ -1172,12 +1204,16 @@ func formatPermissions(mode os.FileMode) string {
 var regexpPerm = regexp.MustCompile(`^[0-7]{3,4}$`)
 
 func (s *Service) createFileHistorySnapshot(serverID int, filePath, absPath string) {
-	stats, err := os.Stat(absPath)
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		return
+	}
+	stats, err := secureStat(serverRoot, absPath)
 	if err != nil || stats.IsDir() || stats.Size() > maxReadableHistoryBytes {
 		return
 	}
 
-	raw, err := os.ReadFile(absPath)
+	raw, err := secureReadFile(serverRoot, absPath)
 	if err != nil {
 		return
 	}
@@ -1186,7 +1222,7 @@ func (s *Service) createFileHistorySnapshot(serverID int, filePath, absPath stri
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(historyDir, 0o750); err != nil {
+	if err := secureMkdirAll(serverRoot, historyDir, 0o750); err != nil {
 		return
 	}
 
@@ -1195,11 +1231,11 @@ func (s *Service) createFileHistorySnapshot(serverID int, filePath, absPath stri
 	if err != nil {
 		return
 	}
-	if err := os.WriteFile(targetPath, raw, 0o640); err != nil {
+	if err := secureWriteFile(serverRoot, targetPath, raw, 0o640); err != nil {
 		return
 	}
 
-	s.pruneFileHistorySnapshots(historyDir, baseName)
+	s.pruneFileHistorySnapshots(serverRoot, historyDir, baseName)
 }
 
 func (s *Service) resolveFileHistoryLocation(serverID int, filePath string) (string, string, error) {
@@ -1226,8 +1262,8 @@ func (s *Service) resolveFileHistoryLocation(serverID int, filePath string) (str
 	return historyDir, baseName, nil
 }
 
-func (s *Service) pruneFileHistorySnapshots(historyDir, baseName string) {
-	entries, err := os.ReadDir(historyDir)
+func (s *Service) pruneFileHistorySnapshots(serverRoot, historyDir, baseName string) {
+	entries, err := secureReadDir(serverRoot, historyDir)
 	if err != nil {
 		return
 	}
@@ -1262,6 +1298,6 @@ func (s *Service) pruneFileHistorySnapshots(historyDir, baseName string) {
 		if joinErr != nil {
 			continue
 		}
-		_ = os.Remove(targetPath)
+		_ = secureRemove(serverRoot, targetPath)
 	}
 }

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/subtle"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 type sftpImportStats struct {
@@ -19,6 +23,62 @@ type sftpImportStats struct {
 	Bytes       int64
 	lastEmitAt  time.Time
 	emit        func(files, directories int, bytes int64)
+}
+
+func normalizeSHA256Fingerprint(raw string) string {
+	value := strings.TrimSpace(raw)
+	value = strings.TrimPrefix(value, "SHA256:")
+	return strings.TrimSpace(value)
+}
+
+func buildSFTPHostKeyCallback(message map[string]interface{}) (ssh.HostKeyCallback, error) {
+	if message == nil {
+		return nil, errors.New("missing SFTP options")
+	}
+
+	if pinned := normalizeSHA256Fingerprint(asString(message["hostKeyFingerprint"])); pinned != "" {
+		return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			actual := normalizeSHA256Fingerprint(ssh.FingerprintSHA256(key))
+			if subtle.ConstantTimeCompare([]byte(actual), []byte(pinned)) != 1 {
+				return fmt.Errorf("host key fingerprint mismatch for %s", hostname)
+			}
+			return nil
+		}, nil
+	}
+
+	candidates := asStringSlice(message["knownHostsFiles"])
+	if single := strings.TrimSpace(asString(message["knownHostsFile"])); single != "" {
+		candidates = append(candidates, single)
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil && strings.TrimSpace(homeDir) != "" {
+		candidates = append(candidates, filepath.Join(homeDir, ".ssh", "known_hosts"))
+	}
+	candidates = append(candidates, "/etc/ssh/ssh_known_hosts")
+
+	seen := make(map[string]struct{}, len(candidates))
+	existingFiles := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		path := strings.TrimSpace(candidate)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			existingFiles = append(existingFiles, path)
+		}
+	}
+	if len(existingFiles) == 0 {
+		return nil, errors.New("missing SFTP host key trust data: provide hostKeyFingerprint or known_hosts file")
+	}
+
+	callback, err := knownhosts.New(existingFiles...)
+	if err != nil {
+		return nil, fmt.Errorf("invalid known_hosts configuration: %w", err)
+	}
+	return callback, nil
 }
 
 func (s *sftpImportStats) maybeEmit(force bool) {
@@ -73,10 +133,16 @@ func (s *Service) handleImportSFTPFiles(message map[string]interface{}) {
 		}
 	}
 
+	hostKeyCallback, err := buildSFTPHostKeyCallback(message)
+	if err != nil {
+		s.sendSFTPImportResult(serverID, false, 0, 0, 0, err.Error())
+		return
+	}
+
 	sshConfig := &ssh.ClientConfig{
 		User:            username,
 		Auth:            []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         20 * time.Second,
 	}
 

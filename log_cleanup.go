@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -52,8 +51,13 @@ func (s *Service) handleLogCleanup(message map[string]interface{}) {
 		sendErr(err.Error())
 		return
 	}
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
 
-	stats, statErr := os.Stat(logDir)
+	stats, statErr := secureStat(serverRoot, logDir)
 	if statErr != nil || !stats.IsDir() {
 		_ = s.sendJSON(map[string]interface{}{
 			"type":      "log_cleanup_result",
@@ -69,7 +73,7 @@ func (s *Service) handleLogCleanup(message map[string]interface{}) {
 	rotated, deleted := 0, 0
 	maxBytes := int64(maxFileSizeMB) * 1024 * 1024
 
-	if entries, readErr := os.ReadDir(logDir); readErr == nil {
+	if entries, readErr := secureReadDir(serverRoot, logDir); readErr == nil {
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue
@@ -79,7 +83,7 @@ func (s *Service) handleLogCleanup(message map[string]interface{}) {
 			if joinErr != nil {
 				continue
 			}
-			info, infoErr := os.Stat(entryPath)
+			info, infoErr := secureStat(serverRoot, entryPath)
 			if infoErr != nil || info.IsDir() {
 				continue
 			}
@@ -90,22 +94,25 @@ func (s *Service) handleLogCleanup(message map[string]interface{}) {
 				continue
 			}
 
-			rotatedPath := filepath.Join(logDir, fmt.Sprintf("%s.%s", entryName, time.Now().UTC().Format("20060102-150405")))
-			if err := os.Rename(entryPath, rotatedPath); err != nil {
+			rotatedPath, joinErr := safeJoin(logDir, fmt.Sprintf("%s.%s", entryName, time.Now().UTC().Format("20060102-150405")))
+			if joinErr != nil {
+				continue
+			}
+			if err := secureRename(serverRoot, entryPath, rotatedPath); err != nil {
 				continue
 			}
 			rotated++
 
 			if compressOld {
-				if gzPath, gzErr := compressFileToGzip(rotatedPath); gzErr == nil {
-					_ = os.Remove(rotatedPath)
+				if gzPath, gzErr := compressFileToGzip(serverRoot, rotatedPath); gzErr == nil {
+					_ = secureRemove(serverRoot, rotatedPath)
 					_ = os.Chtimes(gzPath, info.ModTime(), info.ModTime())
 				}
 			}
 		}
 	}
 
-	candidates := collectCleanupCandidates(logDir)
+	candidates := collectCleanupCandidates(serverRoot, logDir)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].MTime.After(candidates[j].MTime)
 	})
@@ -121,7 +128,7 @@ func (s *Service) handleLogCleanup(message map[string]interface{}) {
 		removeForCount := keepFiles > 0 && idx >= keepFiles
 		removeForAge := !cutoff.IsZero() && item.MTime.Before(cutoff)
 		if removeForCount || removeForAge {
-			if err := os.Remove(item.Path); err == nil {
+			if err := secureRemove(serverRoot, item.Path); err == nil {
 				deleted++
 			}
 			continue
@@ -139,8 +146,8 @@ func (s *Service) handleLogCleanup(message map[string]interface{}) {
 	})
 }
 
-func collectCleanupCandidates(logDir string) []cleanupCandidate {
-	entries, err := os.ReadDir(logDir)
+func collectCleanupCandidates(serverRoot, logDir string) []cleanupCandidate {
+	entries, err := secureReadDir(serverRoot, logDir)
 	if err != nil {
 		return nil
 	}
@@ -154,7 +161,7 @@ func collectCleanupCandidates(logDir string) []cleanupCandidate {
 		if joinErr != nil {
 			continue
 		}
-		info, infoErr := os.Stat(path)
+		info, infoErr := secureStat(serverRoot, path)
 		if infoErr != nil || info.IsDir() {
 			continue
 		}
@@ -168,15 +175,15 @@ func collectCleanupCandidates(logDir string) []cleanupCandidate {
 	return out
 }
 
-func compressFileToGzip(srcPath string) (string, error) {
-	src, err := os.Open(srcPath)
+func compressFileToGzip(serverRoot, srcPath string) (string, error) {
+	src, err := secureOpen(serverRoot, srcPath)
 	if err != nil {
 		return "", err
 	}
 	defer src.Close()
 
 	dstPath := srcPath + ".gz"
-	dst, err := os.Create(dstPath)
+	dst, err := secureOpenFile(serverRoot, dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return "", err
 	}
@@ -187,15 +194,15 @@ func compressFileToGzip(srcPath string) (string, error) {
 	fileCloseErr := dst.Close()
 
 	if copyErr != nil {
-		_ = os.Remove(dstPath)
+		_ = secureRemove(serverRoot, dstPath)
 		return "", copyErr
 	}
 	if closeErr != nil {
-		_ = os.Remove(dstPath)
+		_ = secureRemove(serverRoot, dstPath)
 		return "", closeErr
 	}
 	if fileCloseErr != nil {
-		_ = os.Remove(dstPath)
+		_ = secureRemove(serverRoot, dstPath)
 		return "", fileCloseErr
 	}
 

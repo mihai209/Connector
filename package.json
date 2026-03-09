@@ -4,6 +4,8 @@
   "description": "Acest daemon inlocuieste connector-ul Node.js cu unul scris in Go, pastrand protocolul cu panel-ul existent.",
   "main": "connector-go",
   "scripts": {
+    "alerts": "gh api repos/mihai209/Connector/code-scanning/alerts --paginate | jq '.' > alerts.json",
+    "": "the command from above is to gather all alerts, and is available for the owner/contributors of the repo",
     "build": "go build -o connector-go"
   },
   "author": "Mihai209",

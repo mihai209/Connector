@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -251,8 +250,13 @@ func (s *Service) handleHTTPFileRead(w http.ResponseWriter, r *http.Request, ser
 		http.Error(w, "Forbidden path", http.StatusForbidden)
 		return
 	}
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		http.Error(w, "Forbidden path", http.StatusForbidden)
+		return
+	}
 
-	stat, err := os.Stat(absPath)
+	stat, err := secureStat(serverRoot, absPath)
 	if err != nil {
 		http.Error(w, "File not found", http.StatusNotFound)
 		return
@@ -262,7 +266,7 @@ func (s *Service) handleHTTPFileRead(w http.ResponseWriter, r *http.Request, ser
 		return
 	}
 
-	f, err := os.Open(absPath)
+	f, err := secureOpen(serverRoot, absPath)
 	if err != nil {
 		http.Error(w, "Failed to open file", http.StatusInternalServerError)
 		return
