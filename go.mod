@@ -6,7 +6,7 @@ require (
 	github.com/common-nighthawk/go-figure v0.0.0-20210622060536-734e95fb86be
 	github.com/gliderlabs/ssh v0.3.8
 	github.com/gorilla/websocket v1.5.3
-	github.com/pkg/sftp v1.13.7
+	github.com/pkg/sftp v1.13.10
 	github.com/shirou/gopsutil/v3 v3.24.5
 	golang.org/x/crypto v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
