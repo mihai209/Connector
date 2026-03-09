@@ -48,6 +48,17 @@ const (
 	remoteDownloadTimeout                  = 8 * time.Minute
 )
 
+var defaultAllowedDownloadHosts = []string{
+	"github.com",
+	"raw.githubusercontent.com",
+	"codeload.github.com",
+	"objects.githubusercontent.com",
+	"mohistmc.github.io",
+	"api.modrinth.com",
+	"cdn.modrinth.com",
+	"modrinth.com",
+}
+
 type Config struct {
 	Panel struct {
 		URL            string   `json:"url"`
@@ -121,7 +132,8 @@ type Config struct {
 		WSReadLimitMB       int64 `json:"wsReadLimitMb"`
 	} `json:"system"`
 	Transfers struct {
-		DownloadLimit int `json:"downloadLimit"`
+		DownloadLimit        int      `json:"downloadLimit"`
+		AllowedDownloadHosts []string `json:"allowedDownloadHosts"`
 	} `json:"transfers"`
 	Throttles struct {
 		Enabled           *bool  `json:"enabled"`

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -161,6 +162,10 @@ func loadConfig(configPath string) (Config, error) {
 	if cfg.Transfers.DownloadLimit < 0 {
 		cfg.Transfers.DownloadLimit = 0
 	}
+	cfg.Transfers.AllowedDownloadHosts = normalizeAllowedDownloadHosts(cfg.Transfers.AllowedDownloadHosts)
+	if len(cfg.Transfers.AllowedDownloadHosts) == 0 {
+		cfg.Transfers.AllowedDownloadHosts = append([]string(nil), defaultAllowedDownloadHosts...)
+	}
 	if cfg.Throttles.Enabled == nil {
 		enabled := true
 		cfg.Throttles.Enabled = &enabled
@@ -264,4 +269,57 @@ func extractURLOrigin(raw string) (string, error) {
 	}
 
 	return protocol + "://" + strings.ToLower(parsed.Host), nil
+}
+
+func normalizeAllowedDownloadHosts(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{})
+
+	for _, raw := range values {
+		value := strings.TrimSpace(strings.ToLower(raw))
+		if value == "" {
+			continue
+		}
+
+		// Accept URL-like values but keep only host[:port].
+		if strings.Contains(value, "://") {
+			parsed, err := url.Parse(value)
+			if err != nil {
+				continue
+			}
+			value = strings.TrimSpace(strings.ToLower(parsed.Host))
+		}
+		if value == "" {
+			continue
+		}
+		value = strings.TrimSuffix(value, ".")
+		if strings.ContainsAny(value, "/?#@") {
+			continue
+		}
+
+		// Normalize host[:port].
+		if host, port, err := net.SplitHostPort(value); err == nil {
+			host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+			if host == "" {
+				continue
+			}
+			if p, perr := strconv.Atoi(port); perr != nil || p <= 0 || p > 65535 {
+				continue
+			}
+			value = net.JoinHostPort(host, port)
+		} else {
+			// Ignore wildcard/ambiguous formats to keep allowlist deterministic.
+			if strings.Contains(value, "*") {
+				continue
+			}
+		}
+
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+
+	return normalized
 }

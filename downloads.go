@@ -15,6 +15,42 @@ import (
 	"time"
 )
 
+func normalizeDownloadHost(input string) string {
+	host := strings.TrimSpace(strings.ToLower(input))
+	host = strings.Trim(host, "[]")
+	host = strings.TrimSuffix(host, ".")
+	return host
+}
+
+func resolveAllowlistedDownloadHost(hostname, port string, allowlisted []string) (string, error) {
+	host := normalizeDownloadHost(hostname)
+	if host == "" {
+		return "", errors.New("download URL host is blocked")
+	}
+
+	// Match explicit host:port entries first.
+	if port != "" {
+		withPort := net.JoinHostPort(host, strings.TrimSpace(port))
+		for _, entry := range allowlisted {
+			if strings.EqualFold(entry, withPort) {
+				return withPort, nil
+			}
+		}
+	}
+
+	// Then match exact host entries.
+	for _, entry := range allowlisted {
+		if strings.Contains(entry, ":") {
+			continue
+		}
+		if strings.EqualFold(entry, host) {
+			return entry, nil
+		}
+	}
+
+	return "", errors.New("download URL host is not allowlisted")
+}
+
 func sanitizeDownloadBasename(name string) string {
 	raw := strings.TrimSpace(name)
 	if raw == "" {
@@ -52,7 +88,7 @@ func isBlockedDownloadIP(ip net.IP) bool {
 	return !ip.IsGlobalUnicast()
 }
 
-func validateRemoteDownloadURL(ctx context.Context, parsedURL *url.URL) error {
+func validateRemoteDownloadURL(ctx context.Context, parsedURL *url.URL, allowlistedHosts []string) error {
 	if parsedURL == nil {
 		return errors.New("invalid download URL")
 	}
@@ -65,9 +101,12 @@ func validateRemoteDownloadURL(ctx context.Context, parsedURL *url.URL) error {
 		return errors.New("only http/https URLs are allowed")
 	}
 
-	host := strings.TrimSpace(parsedURL.Hostname())
+	host := normalizeDownloadHost(parsedURL.Hostname())
 	if host == "" || strings.EqualFold(host, "localhost") {
 		return errors.New("download URL host is blocked")
+	}
+	if _, err := resolveAllowlistedDownloadHost(host, strings.TrimSpace(parsedURL.Port()), allowlistedHosts); err != nil {
+		return err
 	}
 
 	if ip := net.ParseIP(host); ip != nil {
@@ -134,9 +173,21 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 		sendErr("invalid download URL")
 		return
 	}
-	if err := validateRemoteDownloadURL(context.Background(), parsedURL); err != nil {
+	if err := validateRemoteDownloadURL(context.Background(), parsedURL, s.cfg.Transfers.AllowedDownloadHosts); err != nil {
 		sendErr(err.Error())
 		return
+	}
+	safeHost, err := resolveAllowlistedDownloadHost(parsedURL.Hostname(), parsedURL.Port(), s.cfg.Transfers.AllowedDownloadHosts)
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
+	safeURL := &url.URL{
+		Scheme:   strings.ToLower(strings.TrimSpace(parsedURL.Scheme)),
+		Host:     safeHost,
+		Path:     parsedURL.Path,
+		RawPath:  parsedURL.RawPath,
+		RawQuery: parsedURL.RawQuery,
 	}
 
 	if fileName == "" {
@@ -175,7 +226,7 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 	tmpPath := targetPath + ".cpanel-downloading"
 	_ = secureRemove(serverRoot, tmpPath)
 
-	req, err := http.NewRequest(http.MethodGet, parsedURL.String(), nil)
+	req, err := http.NewRequest(http.MethodGet, safeURL.String(), nil)
 	if err != nil {
 		sendErr("failed to build download request")
 		return
@@ -185,11 +236,11 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, _, splitErr := net.SplitHostPort(addr)
+			host, port, splitErr := net.SplitHostPort(addr)
 			if splitErr != nil {
 				return nil, splitErr
 			}
-			if err := validateRemoteDownloadURL(ctx, &url.URL{Scheme: "http", Host: host}); err != nil {
+			if err := validateRemoteDownloadURL(ctx, &url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}, s.cfg.Transfers.AllowedDownloadHosts); err != nil {
 				return nil, err
 			}
 			return dialer.DialContext(ctx, network, addr)
@@ -202,7 +253,7 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
 			}
-			return validateRemoteDownloadURL(req.Context(), req.URL)
+			return validateRemoteDownloadURL(req.Context(), req.URL, s.cfg.Transfers.AllowedDownloadHosts)
 		},
 	}
 	resp, err := client.Do(req)

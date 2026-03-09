@@ -76,6 +76,19 @@ VOLUMES_PATH=/var/lib/cpanel/volumes \
     "directory": "/var/lib/cpanel/volumes",
     "hostKeyPath": "/etc/cpanel-connector/sftp_host_rsa.key"
   },
+  "transfers": {
+    "downloadLimit": 0,
+    "allowedDownloadHosts": [
+      "github.com",
+      "raw.githubusercontent.com",
+      "codeload.github.com",
+      "objects.githubusercontent.com",
+      "mohistmc.github.io",
+      "api.modrinth.com",
+      "cdn.modrinth.com",
+      "modrinth.com"
+    ]
+  },
   "docker": {
     "network": {
       "name": "cpanel_nw",
@@ -94,6 +107,9 @@ VOLUMES_PATH=/var/lib/cpanel/volumes \
 - `[]` (or omitted): inherit Docker daemon/host DNS (recommended default)
 - explicit values: force those resolvers in runtime/install containers
 - `"auto"` / `"host"` / `"inherit"`: alias for inherit mode
+
+`transfers.allowedDownloadHosts` is an SSRF safety allowlist for remote file downloads.
+Only exact hosts from this list are allowed (`http/https` only).
 
 ### Update Mode
 
