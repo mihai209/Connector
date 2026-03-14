@@ -1032,6 +1032,7 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 	newName := strings.TrimSpace(asString(message["newName"]))
 	permissions := strings.TrimSpace(asString(message["permissions"]))
 	files := asStringSlice(message["files"])
+	requestId := strings.TrimSpace(asString(message["requestId"]))
 
 	if serverID <= 0 {
 		return
@@ -1147,12 +1148,16 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 		return
 	}
 
-	_ = s.sendJSON(map[string]interface{}{
+	payload := map[string]interface{}{
 		"type":      "file_list",
 		"serverId":  serverID,
 		"directory": directory,
 		"files":     fileList,
-	})
+	}
+	if requestId != "" {
+		payload["requestId"] = requestId
+	}
+	_ = s.sendJSON(payload)
 }
 
 func listDirectoryEntries(serverRoot, dir string) ([]FileListEntry, error) {
