@@ -578,6 +578,7 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 func (s *Service) handleReadFile(message map[string]interface{}) {
 	serverID := asInt(message["serverId"])
 	filePath := asString(message["filePath"])
+	encoding := strings.ToLower(strings.TrimSpace(asString(message["encoding"])))
 	if serverID <= 0 || strings.TrimSpace(filePath) == "" {
 		return
 	}
@@ -613,6 +614,17 @@ func (s *Service) handleReadFile(message map[string]interface{}) {
 	raw, err := secureReadFile(serverRoot, absPath)
 	if err != nil {
 		sendErr(err.Error())
+		return
+	}
+
+	if encoding == "base64" {
+		_ = s.sendJSON(map[string]interface{}{
+			"type":          "file_content",
+			"serverId":      serverID,
+			"filePath":      filePath,
+			"encoding":      "base64",
+			"contentBase64": base64.StdEncoding.EncodeToString(raw),
+		})
 		return
 	}
 
