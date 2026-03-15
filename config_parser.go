@@ -69,6 +69,9 @@ func (s *Service) applyEggConfigFiles(serverID int, serverPath string, cfg Serve
 	if err := applyFallbackServerPropertiesPort(serverPath, context, definitions); err != nil {
 		return err
 	}
+	if err := applyFallbackVoiceChatBindAddress(serverPath); err != nil {
+		return err
+	}
 
 	s.sendConsoleOutput(serverID, "\x1b[1;32m[✓] Egg config files applied.\x1b[0m\n")
 	return nil
@@ -133,6 +136,79 @@ func applyFallbackServerPropertiesPort(serverPath string, context map[string]str
 	}
 
 	return os.WriteFile(targetPath, []byte(updated), 0o644)
+}
+
+func applyFallbackVoiceChatBindAddress(serverPath string) error {
+	targets := []struct {
+		path string
+		keys []string
+	}{
+		{path: "config/voicechat/voicechat-server.properties", keys: []string{"bind-address", "bind_address", "bind-ip", "bind_ip"}},
+		{path: "config/simplevoicechat/voicechat-server.properties", keys: []string{"bind-address", "bind_address", "bind-ip", "bind_ip"}},
+		{path: "config/plasmovoice/server.yml", keys: []string{"bind-address", "bind_address", "bind-ip", "bind_ip", "bind"}},
+		{path: "config/plasmovoice/server.yaml", keys: []string{"bind-address", "bind_address", "bind-ip", "bind_ip", "bind"}},
+		{path: "config/plasmovoice/server.toml", keys: []string{"bind-address", "bind_address", "bind-ip", "bind_ip", "bind"}},
+	}
+
+	for _, target := range targets {
+		targetPath, joinErr := safeJoin(serverPath, target.path)
+		if joinErr != nil {
+			continue
+		}
+		raw, readErr := os.ReadFile(targetPath)
+		if readErr != nil {
+			continue
+		}
+		updated, changed := patchBindAddressContent(string(raw), target.keys)
+		if !changed {
+			continue
+		}
+		if err := os.WriteFile(targetPath, []byte(updated), 0o644); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func patchBindAddressContent(content string, keys []string) (string, bool) {
+	if strings.TrimSpace(content) == "" || len(keys) == 0 {
+		return content, false
+	}
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		for _, key := range keys {
+			if key == "" {
+				continue
+			}
+			// Supports "key=value" or "key: value" (properties/yaml/toml-like).
+			re := regexp.MustCompile(fmt.Sprintf(`(?i)^\\s*%s\\s*([:=])\\s*(.*)$`, regexp.QuoteMeta(key)))
+			m := re.FindStringSubmatch(line)
+			if len(m) == 0 {
+				continue
+			}
+			sep := m[1]
+			if sep == "=" {
+				lines[i] = fmt.Sprintf("%s = \"0.0.0.0\"", key)
+			} else {
+				lines[i] = fmt.Sprintf("%s: 0.0.0.0", key)
+			}
+			changed = true
+			break
+		}
+	}
+	updated := strings.Join(lines, "\n")
+	if strings.HasSuffix(content, "\r\n") {
+		updated += "\r\n"
+	} else if strings.HasSuffix(content, "\n") {
+		updated += "\n"
+	}
+	return updated, changed
 }
 
 func resolveRawConfigFiles(cfg ServerInstallConfig) interface{} {
