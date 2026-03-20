@@ -486,14 +486,6 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 
 	sendErr := func(text string) {
 		s.sendServerError(serverID, text)
-		_ = s.sendJSON(map[string]interface{}{
-			"type":        "archive_complete",
-			"serverId":    serverID,
-			"archiveName": archiveName,
-			"directory":   directory,
-			"success":     false,
-			"error":       text,
-		})
 	}
 
 	if !isArchiveFileName(name) {
@@ -615,6 +607,14 @@ func (s *Service) handleCreateArchive(message map[string]interface{}) {
 
 	sendErr := func(text string) {
 		s.sendServerError(serverID, text)
+		_ = s.sendJSON(map[string]interface{}{
+			"type":        "archive_complete",
+			"serverId":    serverID,
+			"archiveName": archiveName,
+			"directory":   directory,
+			"success":     false,
+			"error":       text,
+		})
 	}
 
 	if strings.Contains(archiveName, "/") || strings.Contains(archiveName, "\\") {
