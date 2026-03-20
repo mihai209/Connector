@@ -244,6 +244,8 @@ func (s *Service) handleWSMessage(payload []byte) error {
 		s.dispatchWSHandler("read_file_version", func() { s.handleReadFileVersion(envelope) })
 	case "extract_archive":
 		s.dispatchWSHandler("extract_archive", func() { s.handleExtractArchive(envelope) })
+	case "create_archive":
+		s.dispatchWSHandler("create_archive", func() { s.handleCreateArchive(envelope) })
 	case "download_file":
 		s.dispatchWSHandler("download_file", func() { s.handleDownloadFile(envelope) })
 	case "dependency_mirror_check":
@@ -293,6 +295,9 @@ func (s *Service) dispatchFileActionAlias(envelope map[string]interface{}) bool 
 		return true
 	case "extract_archive":
 		s.dispatchWSHandler("extract_archive", func() { s.handleExtractArchive(envelope) })
+		return true
+	case "create_archive":
+		s.dispatchWSHandler("create_archive", func() { s.handleCreateArchive(envelope) })
 		return true
 	case "download_file":
 		s.dispatchWSHandler("download_file", func() { s.handleDownloadFile(envelope) })

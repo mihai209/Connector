@@ -454,6 +454,27 @@ func runExtractionCommand(command string, args []string) error {
 	return nil
 }
 
+func runArchiveCommand(command string, args []string, dir string) error {
+	if _, err := exec.LookPath(command); err != nil {
+		return fmt.Errorf("%s is not installed on connector host", command)
+	}
+
+	cmd := exec.Command(command, args...)
+	cmd.Dir = dir
+	cmd.Stdout = io.Discard
+	stderr := &cappedBuffer{max: 8192}
+	cmd.Stderr = stderr
+
+	if err := cmd.Run(); err != nil {
+		errText := stderr.String()
+		if errText == "" {
+			errText = err.Error()
+		}
+		return fmt.Errorf("%s failed: %s", command, errText)
+	}
+	return nil
+}
+
 func (s *Service) handleExtractArchive(message map[string]interface{}) {
 	serverID := asInt(message["serverId"])
 	directory := asString(message["directory"])
@@ -465,6 +486,14 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 
 	sendErr := func(text string) {
 		s.sendServerError(serverID, text)
+		_ = s.sendJSON(map[string]interface{}{
+			"type":        "archive_complete",
+			"serverId":    serverID,
+			"archiveName": archiveName,
+			"directory":   directory,
+			"success":     false,
+			"error":       text,
+		})
 	}
 
 	if !isArchiveFileName(name) {
@@ -573,6 +602,99 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 			})
 		}
 	}()
+}
+
+func (s *Service) handleCreateArchive(message map[string]interface{}) {
+	serverID := asInt(message["serverId"])
+	directory := strings.TrimSpace(asString(message["directory"]))
+	archiveName := strings.TrimSpace(asString(message["archiveName"]))
+	items := asStringSlice(message["items"])
+	if serverID <= 0 || archiveName == "" {
+		return
+	}
+
+	sendErr := func(text string) {
+		s.sendServerError(serverID, text)
+	}
+
+	if strings.Contains(archiveName, "/") || strings.Contains(archiveName, "\\") {
+		sendErr("invalid archive name")
+		return
+	}
+	if !strings.HasSuffix(strings.ToLower(archiveName), ".zip") {
+		archiveName = archiveName + ".zip"
+	}
+	if strings.TrimSpace(directory) == "" {
+		directory = "/"
+	}
+
+	currentDir, err := safeServerPath(s.volumesPath, serverID, directory)
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
+	serverRoot, err := safeServerPath(s.volumesPath, serverID, "/")
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
+
+	validItems := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" || item == archiveName {
+			continue
+		}
+		if strings.Contains(item, "/") || strings.Contains(item, "\\") {
+			sendErr("invalid item name")
+			return
+		}
+		absPath, err := safeJoin(currentDir, item)
+		if err != nil {
+			sendErr(err.Error())
+			return
+		}
+		if _, err := secureStat(serverRoot, absPath); err != nil {
+			sendErr(fmt.Sprintf("item not found: %s", item))
+			return
+		}
+		validItems = append(validItems, item)
+	}
+	if len(validItems) == 0 {
+		sendErr("no items selected for archive")
+		return
+	}
+
+	archivePath, err := safeJoin(currentDir, archiveName)
+	if err != nil {
+		sendErr(err.Error())
+		return
+	}
+	_ = os.Remove(archivePath)
+
+	args := append([]string{"-r", archiveName}, validItems...)
+	if err := runArchiveCommand("zip", args, currentDir); err != nil {
+		sendErr(err.Error())
+		return
+	}
+
+	_ = s.sendJSON(map[string]interface{}{
+		"type":        "archive_complete",
+		"serverId":    serverID,
+		"archiveName": archiveName,
+		"directory":   directory,
+		"success":     true,
+	})
+
+	fileList, listErr := listDirectoryEntries(serverRoot, currentDir)
+	if listErr == nil {
+		_ = s.sendJSON(map[string]interface{}{
+			"type":      "file_list",
+			"serverId":  serverID,
+			"directory": directory,
+			"files":     fileList,
+		})
+	}
 }
 
 func (s *Service) handleReadFile(message map[string]interface{}) {
