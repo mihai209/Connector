@@ -51,6 +51,7 @@ func (s *Service) sendHeartbeat() {
 				"free":  toGB(dk.Free),
 			},
 		},
+		"diagnostics": s.getDiagnosticsSnapshot(),
 	}
 	_ = s.sendJSON(payload)
 }

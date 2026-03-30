@@ -183,6 +183,13 @@ type Service struct {
 
 	metricsMu sync.Mutex
 	metrics   ConnectorMetrics
+
+	diagnosticsMu       sync.RWMutex
+	diagnosticsCache    ConnectorDiagnosticsSnapshot
+	diagnosticsCacheAt  time.Time
+	lastSFTPAuthAt      time.Time
+	lastSFTPAuthSuccess bool
+	lastSFTPAuthError   string
 }
 
 type LogBuffer struct {
@@ -259,6 +266,19 @@ type SFTPAuthResponse struct {
 		Name        string `json:"name"`
 	} `json:"servers"`
 	Error string `json:"error"`
+}
+
+type ConnectorDiagnosticCheck struct {
+	Status    string                 `json:"status"`
+	Summary   string                 `json:"summary"`
+	Detail    string                 `json:"detail,omitempty"`
+	CheckedAt string                 `json:"checkedAt,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type ConnectorDiagnosticsSnapshot struct {
+	GeneratedAt string                              `json:"generatedAt"`
+	Checks      map[string]ConnectorDiagnosticCheck `json:"checks"`
 }
 
 type FileListEntry struct {

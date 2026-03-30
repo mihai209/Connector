@@ -92,21 +92,28 @@ func (s *Service) authenticateSFTP(username, password string) (*SFTPAuthResponse
 
 	response, err := s.panelPostJSON(panelSFTPAuthPath, payload, int(sftpAuthTimeout.Seconds()))
 	if err != nil {
+		s.recordSFTPAuthResult(false, err)
 		return nil, err
 	}
 
 	raw, _ := json.Marshal(response)
 	var auth SFTPAuthResponse
 	if err := json.Unmarshal(raw, &auth); err != nil {
+		s.recordSFTPAuthResult(false, err)
 		return nil, err
 	}
 	if !auth.Success {
 		if strings.TrimSpace(auth.Error) != "" {
-			return nil, errors.New(auth.Error)
+			authErr := errors.New(auth.Error)
+			s.recordSFTPAuthResult(false, authErr)
+			return nil, authErr
 		}
-		return nil, errors.New("invalid sftp credentials")
+		authErr := errors.New("invalid sftp credentials")
+		s.recordSFTPAuthResult(false, authErr)
+		return nil, authErr
 	}
 
+	s.recordSFTPAuthResult(true, nil)
 	return &auth, nil
 }
 
