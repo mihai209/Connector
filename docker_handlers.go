@@ -83,7 +83,14 @@ func (s *Service) executePowerActionWithConfig(serverID int, action, stopCommand
 		return nil
 	case "restart":
 		if _, err := runCommand("docker", "restart", containerName); err != nil {
-			return err
+			if shouldRecoverMissingContainerOnStart(err) {
+				s.sendConsoleOutput(serverID, "\x1b[1;33m[!] Runtime container is missing during restart. Rebuilding it from the last saved install config...\x1b[0m\n")
+				if recoverErr := s.recreateMissingRuntimeContainer(serverID, runtimeCfg); recoverErr != nil {
+					return fmt.Errorf("%v (auto-recreate failed: %v)", err, recoverErr)
+				}
+			} else {
+				return err
+			}
 		}
 		s.repairServerContainerDNS(serverID)
 		time.Sleep(logAttachRetryDelay)
