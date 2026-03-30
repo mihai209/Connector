@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +43,10 @@ func parseMinecraftEULA(raw []byte) bool {
 }
 
 func (s *Service) executePowerAction(serverID int, action, stopCommand string) error {
+	return s.executePowerActionWithConfig(serverID, action, stopCommand, ServerInstallConfig{})
+}
+
+func (s *Service) executePowerActionWithConfig(serverID int, action, stopCommand string, runtimeCfg ServerInstallConfig) error {
 	if serverID <= 0 || action == "" {
 		return fmt.Errorf("invalid power payload")
 	}
@@ -52,7 +57,7 @@ func (s *Service) executePowerAction(serverID int, action, stopCommand string) e
 		if _, err := runCommand("docker", "start", containerName); err != nil {
 			if shouldRecoverMissingContainerOnStart(err) {
 				s.sendConsoleOutput(serverID, "\x1b[1;33m[!] Runtime container is missing. Rebuilding it from the last saved install config...\x1b[0m\n")
-				if recoverErr := s.recreateMissingRuntimeContainer(serverID); recoverErr != nil {
+				if recoverErr := s.recreateMissingRuntimeContainer(serverID, runtimeCfg); recoverErr != nil {
 					return fmt.Errorf("%v (auto-recreate failed: %v)", err, recoverErr)
 				}
 			} else {
@@ -105,7 +110,7 @@ func shouldRecoverMissingContainerOnStart(err error) bool {
 		strings.Contains(msg, "no such object")
 }
 
-func (s *Service) recreateMissingRuntimeContainer(serverID int) error {
+func (s *Service) recreateMissingRuntimeContainer(serverID int, fallbackCfg ServerInstallConfig) error {
 	serverPath := filepath.Join(s.volumesPath, strconv.Itoa(serverID))
 	if _, statErr := os.Stat(serverPath); statErr != nil {
 		return fmt.Errorf("server path is missing: %w", statErr)
@@ -113,7 +118,13 @@ func (s *Service) recreateMissingRuntimeContainer(serverID int) error {
 
 	cfg, err := s.loadRuntimeConfigSnapshot(serverID)
 	if err != nil {
-		return fmt.Errorf("runtime config snapshot missing: %w", err)
+		if strings.TrimSpace(fallbackCfg.Image) == "" {
+			return fmt.Errorf("runtime config snapshot missing: %w", err)
+		}
+		cfg = fallbackCfg
+		if persistErr := s.persistRuntimeConfigSnapshot(serverID, cfg); persistErr != nil {
+			s.sendConsoleOutput(serverID, fmt.Sprintf("\x1b[1;33m[!] Could not persist runtime config snapshot during auto-recreate: %v\x1b[0m\n", persistErr))
+		}
 	}
 	if strings.TrimSpace(cfg.Image) == "" {
 		return fmt.Errorf("runtime config snapshot has no image")
@@ -151,6 +162,15 @@ func (s *Service) handlePowerAction(message map[string]interface{}) {
 	action := strings.ToLower(strings.TrimSpace(asString(message["action"])))
 	stopCommand := strings.TrimSpace(asString(message["stopCommand"]))
 	requestID := strings.TrimSpace(asString(message["requestId"]))
+	var runtimeCfg ServerInstallConfig
+	if rawCfg, ok := message["runtimeConfig"]; ok && rawCfg != nil {
+		payload, marshalErr := json.Marshal(rawCfg)
+		if marshalErr != nil {
+			bootWarn("server power runtime config encode failed server=%d error=%v", serverID, marshalErr)
+		} else if err := json.Unmarshal(payload, &runtimeCfg); err != nil {
+			bootWarn("server power runtime config parse failed server=%d error=%v", serverID, err)
+		}
+	}
 	if serverID <= 0 || action == "" {
 		s.recordPowerMetric("failed")
 		return
@@ -160,7 +180,7 @@ func (s *Service) handlePowerAction(message map[string]interface{}) {
 		"action": action,
 	})
 
-	if err := s.executePowerAction(serverID, action, stopCommand); err != nil {
+	if err := s.executePowerActionWithConfig(serverID, action, stopCommand, runtimeCfg); err != nil {
 		s.recordPowerMetric("failed")
 		s.sendActionAck(serverID, "power", "failed", err.Error(), requestID, map[string]interface{}{
 			"action": action,
