@@ -196,6 +196,10 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 	if fileName == "" {
 		fileName = "download.bin"
 	}
+	if isProtectedServerEntryName(fileName) {
+		sendErr("access to protected runtime files is denied")
+		return
+	}
 
 	targetDir, err := safeServerPath(s.volumesPath, serverID, directory)
 	if err != nil {
@@ -215,6 +219,10 @@ func (s *Service) handleDownloadFile(message map[string]interface{}) {
 	targetPath, err := safeJoin(targetDir, fileName)
 	if err != nil {
 		sendErr(err.Error())
+		return
+	}
+	if isProtectedServerPath(targetPath) {
+		sendErr("access to protected runtime files is denied")
 		return
 	}
 

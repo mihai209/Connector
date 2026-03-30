@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -63,6 +64,41 @@ var archiveMinerMediumPatterns = []*regexp.Regexp{
 }
 
 var errFileSearchLimitReached = errors.New("file search limit reached")
+
+func isProtectedServerEntryName(name string) bool {
+	return strings.TrimSpace(name) == runtimeConfigSnapshotFile
+}
+
+func isProtectedServerPath(pathValue string) bool {
+	raw := strings.TrimSpace(strings.ReplaceAll(pathValue, "\\", "/"))
+	if raw == "" {
+		return false
+	}
+	clean := path.Clean("/" + strings.TrimPrefix(raw, "/"))
+	for _, segment := range strings.Split(strings.TrimPrefix(clean, "/"), "/") {
+		if isProtectedServerEntryName(segment) {
+			return true
+		}
+	}
+	return false
+}
+
+func archiveContainsProtectedServerEntries(archivePath, displayName string) (bool, error) {
+	kind, ok := detectArchiveKind(displayName)
+	if !ok {
+		return false, nil
+	}
+	entries, err := listArchiveEntriesForScan(kind, archivePath, displayName)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if isProtectedServerPath(entry) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 type cappedBuffer struct {
 	max int
@@ -492,6 +528,10 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 		sendErr("selected file is not a supported archive")
 		return
 	}
+	if isProtectedServerEntryName(name) || isProtectedServerPath(name) {
+		sendErr("access to protected runtime files is denied")
+		return
+	}
 	if targetDirectory == "" {
 		targetDirectory = directory
 	}
@@ -535,6 +575,15 @@ func (s *Service) handleExtractArchive(message map[string]interface{}) {
 		}
 		s.sendConsoleOutput(serverID, fmt.Sprintf("[!] %s\n", reason))
 		sendErr(reason)
+		return
+	}
+	hasProtectedEntries, protectedErr := archiveContainsProtectedServerEntries(archivePath, name)
+	if protectedErr != nil {
+		sendErr(fmt.Sprintf("archive validation failed: %v", protectedErr))
+		return
+	}
+	if hasProtectedEntries {
+		sendErr("archive contains protected runtime files and cannot be extracted")
 		return
 	}
 
@@ -621,6 +670,10 @@ func (s *Service) handleCreateArchive(message map[string]interface{}) {
 		sendErr("invalid archive name")
 		return
 	}
+	if isProtectedServerEntryName(archiveName) || isProtectedServerPath(archiveName) {
+		sendErr("access to protected runtime files is denied")
+		return
+	}
 	if !strings.HasSuffix(strings.ToLower(archiveName), ".zip") {
 		archiveName = archiveName + ".zip"
 	}
@@ -647,6 +700,10 @@ func (s *Service) handleCreateArchive(message map[string]interface{}) {
 		}
 		if strings.Contains(item, "/") || strings.Contains(item, "\\") {
 			sendErr("invalid item name")
+			return
+		}
+		if isProtectedServerEntryName(item) || isProtectedServerPath(item) {
+			sendErr("protected runtime files cannot be archived")
 			return
 		}
 		absPath, err := safeJoin(currentDir, item)
@@ -706,6 +763,10 @@ func (s *Service) handleReadFile(message map[string]interface{}) {
 	}
 	sendErr := func(text string) {
 		s.sendServerError(serverID, text)
+	}
+	if isProtectedServerPath(filePath) {
+		sendErr("access to protected runtime files is denied")
+		return
 	}
 
 	absPath, err := safeServerPath(s.volumesPath, serverID, filePath)
@@ -769,6 +830,10 @@ func (s *Service) handleWriteFile(message map[string]interface{}) {
 	}
 	sendErr := func(text string) {
 		s.sendServerError(serverID, text)
+	}
+	if isProtectedServerPath(filePath) {
+		sendErr("access to protected runtime files is denied")
+		return
 	}
 
 	absPath, err := safeServerPath(s.volumesPath, serverID, filePath)
@@ -1089,6 +1154,12 @@ func (s *Service) handleSearchFiles(message map[string]interface{}) {
 		if name == "" {
 			return nil
 		}
+		if isProtectedServerEntryName(name) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			if name == fileHistoryDirName {
 				return filepath.SkipDir
@@ -1188,6 +1259,10 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 
 	switch action {
 	case "rename_file":
+		if isProtectedServerEntryName(name) || isProtectedServerPath(name) || isProtectedServerEntryName(newName) || isProtectedServerPath(newName) {
+			sendErr("access to protected runtime files is denied")
+			return
+		}
 		srcPath, err := safeJoin(currentDir, name)
 		if err != nil {
 			sendErr(err.Error())
@@ -1212,6 +1287,12 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 		}
 	case "delete_files":
 		for _, fileName := range files {
+			if isProtectedServerEntryName(fileName) || isProtectedServerPath(fileName) {
+				sendErr("access to protected runtime files is denied")
+				return
+			}
+		}
+		for _, fileName := range files {
 			targetPath, err := safeJoin(currentDir, fileName)
 			if err != nil {
 				continue
@@ -1219,6 +1300,10 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 			_ = secureRemoveAll(serverRoot, targetPath)
 		}
 	case "set_permissions":
+		if isProtectedServerEntryName(name) || isProtectedServerPath(name) {
+			sendErr("access to protected runtime files is denied")
+			return
+		}
 		if !regexpPerm.MatchString(permissions) {
 			sendErr("invalid permissions format")
 			return
@@ -1249,6 +1334,10 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 		}
 		_, _ = runCommand("chown", "-R", s.chownUser(), targetPath)
 	case "create_file":
+		if isProtectedServerEntryName(name) || isProtectedServerPath(name) {
+			sendErr("access to protected runtime files is denied")
+			return
+		}
 		targetPath, err := safeJoin(currentDir, name)
 		if err != nil {
 			sendErr(err.Error())
@@ -1303,6 +1392,9 @@ func listDirectoryEntries(serverRoot, dir string) ([]FileListEntry, error) {
 	items := make([]FileListEntry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.Name() == fileHistoryDirName {
+			continue
+		}
+		if isProtectedServerEntryName(entry.Name()) {
 			continue
 		}
 		fullPath, joinErr := safeJoin(dir, entry.Name())

@@ -244,6 +244,10 @@ func (s *Service) handleHTTPFileRead(w http.ResponseWriter, r *http.Request, ser
 		http.Error(w, "Path is required", http.StatusBadRequest)
 		return
 	}
+	if isProtectedServerPath(payload.Path) {
+		http.Error(w, "Forbidden path", http.StatusForbidden)
+		return
+	}
 
 	absPath, err := safeServerPath(s.volumesPath, serverID, payload.Path)
 	if err != nil {
