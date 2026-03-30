@@ -50,7 +50,14 @@ func (s *Service) executePowerAction(serverID int, action, stopCommand string) e
 	switch action {
 	case "start":
 		if _, err := runCommand("docker", "start", containerName); err != nil {
-			return err
+			if shouldRecoverMissingContainerOnStart(err) {
+				s.sendConsoleOutput(serverID, "\x1b[1;33m[!] Runtime container is missing. Rebuilding it from the last saved install config...\x1b[0m\n")
+				if recoverErr := s.recreateMissingRuntimeContainer(serverID); recoverErr != nil {
+					return fmt.Errorf("%v (auto-recreate failed: %v)", err, recoverErr)
+				}
+			} else {
+				return err
+			}
 		}
 		s.repairServerContainerDNS(serverID)
 		time.Sleep(logAttachRetryDelay)
@@ -87,6 +94,41 @@ func (s *Service) executePowerAction(serverID int, action, stopCommand string) e
 	default:
 		return fmt.Errorf("unsupported power action: %s", action)
 	}
+}
+
+func shouldRecoverMissingContainerOnStart(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "no such container") ||
+		strings.Contains(msg, "no such object")
+}
+
+func (s *Service) recreateMissingRuntimeContainer(serverID int) error {
+	serverPath := filepath.Join(s.volumesPath, strconv.Itoa(serverID))
+	if _, statErr := os.Stat(serverPath); statErr != nil {
+		return fmt.Errorf("server path is missing: %w", statErr)
+	}
+
+	cfg, err := s.loadRuntimeConfigSnapshot(serverID)
+	if err != nil {
+		return fmt.Errorf("runtime config snapshot missing: %w", err)
+	}
+	if strings.TrimSpace(cfg.Image) == "" {
+		return fmt.Errorf("runtime config snapshot has no image")
+	}
+
+	if err := s.pullImage(cfg.Image); err != nil {
+		return fmt.Errorf("pull image failed: %w", err)
+	}
+	if err := s.removeContainerIfExists(serverID); err != nil {
+		return fmt.Errorf("cleanup stale container failed: %w", err)
+	}
+	if _, err := s.createRuntimeContainer(serverID, serverPath, cfg, true); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Service) executeServerCommand(serverID int, command string) error {

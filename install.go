@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const runtimeConfigSnapshotFile = ".cpanel_runtime.json"
+
 func (s *Service) handleInstallServer(message map[string]interface{}) {
 	var payload ServerInstallMessage
 	if err := s.marshalMessage(message, &payload); err != nil {
@@ -46,6 +48,9 @@ func (s *Service) handleInstallServer(message map[string]interface{}) {
 	}
 	if err := s.fixServerPermissions(serverPath); err != nil {
 		s.sendConsoleOutput(serverID, fmt.Sprintf("\x1b[1;33m[!] Could not fix server permissions: %v\x1b[0m\n", err))
+	}
+	if err := s.persistRuntimeConfigSnapshot(serverID, payload.Config); err != nil {
+		s.sendConsoleOutput(serverID, fmt.Sprintf("\x1b[1;33m[!] Could not persist runtime config snapshot: %v\x1b[0m\n", err))
 	}
 
 	if err := s.pullImage(payload.Config.Image); err != nil {
@@ -108,6 +113,41 @@ func (s *Service) removeContainerIfExists(serverID int) error {
 	_, _ = runCommand("docker", "stop", containerName)
 	_, _ = runCommand("docker", "rm", "-f", containerName)
 	return nil
+}
+
+func (s *Service) runtimeConfigSnapshotPath(serverID int) string {
+	return filepath.Join(s.volumesPath, strconv.Itoa(serverID), runtimeConfigSnapshotFile)
+}
+
+func (s *Service) persistRuntimeConfigSnapshot(serverID int, cfg ServerInstallConfig) error {
+	if serverID <= 0 {
+		return fmt.Errorf("invalid serverID")
+	}
+	path := s.runtimeConfigSnapshotPath(serverID)
+	payload, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, payload, 0o640); err != nil {
+		return err
+	}
+	_, _ = runCommand("chown", s.chownUser(), path)
+	return nil
+}
+
+func (s *Service) loadRuntimeConfigSnapshot(serverID int) (ServerInstallConfig, error) {
+	var cfg ServerInstallConfig
+	if serverID <= 0 {
+		return cfg, fmt.Errorf("invalid serverID")
+	}
+	raw, err := os.ReadFile(s.runtimeConfigSnapshotPath(serverID))
+	if err != nil {
+		return cfg, err
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
 }
 
 func (s *Service) chownServerPath(serverPath string) error {
