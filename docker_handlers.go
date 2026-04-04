@@ -183,6 +183,16 @@ func (s *Service) handlePowerAction(message map[string]interface{}) {
 		return
 	}
 
+	if err := s.beginPowerAction(serverID, action); err != nil {
+		s.recordPowerMetric("failed")
+		s.sendActionAck(serverID, "power", "failed", err.Error(), requestID, map[string]interface{}{
+			"action": action,
+		})
+		s.sendConsoleOutput(serverID, fmt.Sprintf("\x1b[1;31m[!] Power action rejected (%s): %v\x1b[0m\n", action, err))
+		return
+	}
+	defer s.finishPowerAction(serverID)
+
 	s.sendActionAck(serverID, "power", "accepted", fmt.Sprintf("Power action '%s' accepted.", action), requestID, map[string]interface{}{
 		"action": action,
 	})

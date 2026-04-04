@@ -73,6 +73,7 @@ func NewService(cfg Config, volumesPath string) *Service {
 		lastNotRunningNotice:     make(map[int]time.Time),
 		attachStdin:              make(map[int]*AttachedStream),
 		commandRate:              make(map[int]CommandRateState),
+		powerState:               make(map[int]string),
 		metrics: ConnectorMetrics{
 			StartTime: time.Now().UTC(),
 		},

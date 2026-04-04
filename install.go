@@ -23,6 +23,13 @@ func (s *Service) handleInstallServer(message map[string]interface{}) {
 	}
 
 	serverID := payload.ServerID
+	if err := s.beginInstall(serverID, payload.Reinstall); err != nil {
+		s.sendConsoleOutput(serverID, fmt.Sprintf("\x1b[1;31m[!] Install dispatch rejected: %v\x1b[0m\n", err))
+		s.sendInstallFail(serverID, err.Error())
+		return
+	}
+	defer s.finishInstall(serverID)
+
 	serverPath := filepath.Join(s.volumesPath, strconv.Itoa(serverID))
 	if err := os.MkdirAll(serverPath, 0o755); err != nil {
 		s.sendInstallFail(serverID, err.Error())
@@ -31,6 +38,14 @@ func (s *Service) handleInstallServer(message map[string]interface{}) {
 
 	if err := s.chownServerPath(serverPath); err != nil {
 		s.sendConsoleOutput(serverID, fmt.Sprintf("\x1b[1;33m[!] Could not chown server path: %v\x1b[0m\n", err))
+	}
+
+	if payload.Reinstall {
+		s.sendConsoleOutput(serverID, "\x1b[1;34m[*] Preparing server reinstall...\x1b[0m\n")
+		if err := s.ensureContainerStoppedForReinstall(serverID); err != nil {
+			s.sendInstallFail(serverID, err.Error())
+			return
+		}
 	}
 
 	if payload.Config.SkipInstallationScript {
@@ -113,6 +128,28 @@ func (s *Service) removeContainerIfExists(serverID int) error {
 	_, _ = runCommand("docker", "stop", containerName)
 	_, _ = runCommand("docker", "rm", "-f", containerName)
 	return nil
+}
+
+func (s *Service) ensureContainerStoppedForReinstall(serverID int) error {
+	containerName := fmt.Sprintf("cpanel-%d", serverID)
+	if !s.dockerContainerRunning(serverID) {
+		return nil
+	}
+
+	s.sendConsoleOutput(serverID, "\x1b[1;34m[*] Waiting for server to stop before reinstall...\x1b[0m\n")
+	if _, err := runCommand("docker", "stop", "-t", "30", containerName); err != nil {
+		return fmt.Errorf("reinstall: failed to stop running container: %w", err)
+	}
+	s.cleanupServerStreams(serverID)
+
+	deadline := time.Now().Add(35 * time.Second)
+	for time.Now().Before(deadline) {
+		if !s.dockerContainerRunning(serverID) {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("reinstall: timed out waiting for container to stop")
 }
 
 func (s *Service) runtimeConfigSnapshotPath(serverID int) string {

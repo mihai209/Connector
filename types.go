@@ -184,6 +184,10 @@ type Service struct {
 	metricsMu sync.Mutex
 	metrics   ConnectorMetrics
 
+	powerStateMu sync.Mutex
+	powerState   map[int]string
+	installState sync.Map // map[int]string
+
 	diagnosticsMu       sync.RWMutex
 	diagnosticsCache    ConnectorDiagnosticsSnapshot
 	diagnosticsCacheAt  time.Time
