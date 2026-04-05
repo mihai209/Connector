@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 func runCommand(name string, args ...string) (string, error) {
@@ -47,6 +50,54 @@ func runCommandWithInput(input string, name string, args ...string) (string, err
 		return strings.TrimSpace(stdout.String()), fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+func splitOnLineOrCarriage(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, bytes.TrimRight(data[:i], "\r"), nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), bytes.TrimRight(data, "\r"), nil
+	}
+	return 0, nil, nil
+}
+
+func streamCommandOutput(name string, args []string, onChunk func(string)) error {
+	cmd := exec.Command(name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	var wg sync.WaitGroup
+	forward := func(reader io.Reader) {
+		defer wg.Done()
+		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		scanner.Split(splitOnLineOrCarriage)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if onChunk != nil {
+				onChunk(line)
+			}
+		}
+	}
+
+	wg.Add(2)
+	go forward(stdout)
+	go forward(stderr)
+	wg.Wait()
+
+	return cmd.Wait()
 }
 
 func normalizeBrandHostname(name string) string {

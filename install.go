@@ -519,8 +519,13 @@ func (s *Service) runEggInstallation(serverID int, serverPath string, cfg Server
 	}
 	args = append(args, "/mnt/server/.cpanel_install.sh")
 
-	output, err := runCommand("docker", args...)
-	s.sendConsoleOutput(serverID, output+"\n")
+	err := streamCommandOutput("docker", args, func(line string) {
+		trimmed := strings.TrimRight(line, "\r")
+		if strings.TrimSpace(trimmed) == "" {
+			return
+		}
+		s.sendConsoleOutput(serverID, trimmed+"\n")
+	})
 	_ = os.Remove(scriptPath)
 	if err != nil {
 		return fmt.Errorf("egg installation failed: %w", err)
