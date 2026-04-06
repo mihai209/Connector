@@ -161,6 +161,40 @@ func parseHumanSizeToMB(raw string) (int, error) {
 	return int(math.Round(value * multiplier)), nil
 }
 
+func parseHumanSizeToBytes(raw string) (int64, error) {
+	s := strings.ToUpper(strings.TrimSpace(raw))
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.ReplaceAll(s, "IB", "B")
+	s = strings.ReplaceAll(s, "I", "")
+	if s == "" {
+		return 0, errors.New("empty size")
+	}
+
+	multiplier := float64(1)
+	switch {
+	case strings.HasSuffix(s, "KB"):
+		multiplier = 1024
+		s = strings.TrimSuffix(s, "KB")
+	case strings.HasSuffix(s, "MB"):
+		multiplier = 1024 * 1024
+		s = strings.TrimSuffix(s, "MB")
+	case strings.HasSuffix(s, "GB"):
+		multiplier = 1024 * 1024 * 1024
+		s = strings.TrimSuffix(s, "GB")
+	case strings.HasSuffix(s, "TB"):
+		multiplier = 1024 * 1024 * 1024 * 1024
+		s = strings.TrimSuffix(s, "TB")
+	case strings.HasSuffix(s, "B"):
+		s = strings.TrimSuffix(s, "B")
+	}
+
+	value, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(math.Round(value * multiplier)), nil
+}
+
 func asString(v interface{}) string {
 	switch t := v.(type) {
 	case string:

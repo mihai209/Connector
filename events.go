@@ -156,11 +156,14 @@ func (s *Service) runDockerEventsLoop() {
 			s.cleanupServerStreams(serverID)
 			s.clearBufferedLogs(serverID)
 			_ = s.sendJSON(map[string]interface{}{
-				"type":     "server_stats",
-				"serverId": serverID,
-				"cpu":      "0.0",
-				"memory":   "0",
-				"disk":     "0",
+				"type":           "server_stats",
+				"serverId":       serverID,
+				"cpu":            "0.0",
+				"memory":         "0",
+				"disk":           "0",
+				"network_rx":     "0",
+				"network_tx":     "0",
+				"uptime_seconds": 0,
 			})
 		}
 	}

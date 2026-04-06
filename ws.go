@@ -262,6 +262,15 @@ func (s *Service) handleWSMessage(payload []byte) error {
 		s.dispatchWSHandler("server_schedule_action", func() { s.handleServerScheduleAction(envelope) })
 	case "apply_resource_limits", "server_apply_resource_limits", "server_resource_limits_apply":
 		s.dispatchWSHandler("server_apply_resource_limits", func() { s.handleApplyResourceLimits(envelope) })
+	case "run_diagnostics":
+		s.dispatchWSHandler("run_diagnostics", func() {
+			snapshot := s.refreshDiagnosticsSnapshot()
+			_ = s.sendJSON(map[string]interface{}{
+				"type":        "diagnostics_result",
+				"connectorId": s.cfg.Connector.ID,
+				"diagnostics": snapshot,
+			})
+		})
 	default:
 		// keep compatibility with future panel messages.
 	}

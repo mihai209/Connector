@@ -255,7 +255,7 @@ func (s *Service) handleCheckServerStatus(message map[string]interface{}) {
 		return
 	}
 
-	running, cpuPct, memMB := s.inspectContainerStats(serverID)
+	running, cpuPct, memMB, netRxBytes, netTxBytes, uptimeSeconds := s.inspectContainerStats(serverID)
 	status := "stopped"
 	if running {
 		status = "running"
@@ -284,6 +284,12 @@ func (s *Service) handleCheckServerStatus(message map[string]interface{}) {
 				statusPayload["oomKilled"] = true
 			}
 		}
+		if value, ok := state["finishedAt"]; ok {
+			statusPayload["finishedAt"] = value
+		}
+		if value, ok := state["startedAt"]; ok {
+			statusPayload["startedAt"] = value
+		}
 	}
 	_ = s.sendJSON(statusPayload)
 
@@ -292,11 +298,14 @@ func (s *Service) handleCheckServerStatus(message map[string]interface{}) {
 		diskMB = s.getDiskUsageMB(serverID)
 	}
 	_ = s.sendJSON(map[string]interface{}{
-		"type":     "server_stats",
-		"serverId": serverID,
-		"cpu":      fmt.Sprintf("%.1f", cpuPct),
-		"memory":   strconv.Itoa(memMB),
-		"disk":     strconv.Itoa(diskMB),
+		"type":           "server_stats",
+		"serverId":       serverID,
+		"cpu":            fmt.Sprintf("%.1f", cpuPct),
+		"memory":         strconv.Itoa(memMB),
+		"disk":           strconv.Itoa(diskMB),
+		"network_rx":     strconv.FormatInt(netRxBytes, 10),
+		"network_tx":     strconv.FormatInt(netTxBytes, 10),
+		"uptime_seconds": uptimeSeconds,
 	})
 }
 

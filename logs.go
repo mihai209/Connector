@@ -200,37 +200,46 @@ func (s *Service) startStatsStream(serverID int) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				running, cpuPct, memMB := s.inspectContainerStats(serverID)
+				running, cpuPct, memMB, netRxBytes, netTxBytes, uptimeSeconds := s.inspectContainerStats(serverID)
 				if !running {
 					return
 				}
 				diskMB := s.getDiskUsageMB(serverID)
 				_ = s.sendJSON(map[string]interface{}{
-					"type":     "server_stats",
-					"serverId": serverID,
-					"cpu":      fmt.Sprintf("%.1f", cpuPct),
-					"memory":   strconv.Itoa(memMB),
-					"disk":     strconv.Itoa(diskMB),
+					"type":           "server_stats",
+					"serverId":       serverID,
+					"cpu":            fmt.Sprintf("%.1f", cpuPct),
+					"memory":         strconv.Itoa(memMB),
+					"disk":           strconv.Itoa(diskMB),
+					"network_rx":     strconv.FormatInt(netRxBytes, 10),
+					"network_tx":     strconv.FormatInt(netTxBytes, 10),
+					"uptime_seconds": uptimeSeconds,
 				})
 			}
 		}
 	}()
 }
 
-func (s *Service) inspectContainerStats(serverID int) (bool, float64, int) {
+func (s *Service) inspectContainerStats(serverID int) (bool, float64, int, int64, int64, int64) {
 	containerName := fmt.Sprintf("cpanel-%d", serverID)
-	out, err := runCommand("docker", "inspect", "-f", "{{.State.Running}}", containerName)
-	if err != nil || strings.TrimSpace(out) != "true" {
-		return false, 0, 0
+	inspectOut, err := runCommand("docker", "inspect", "-f", "{{.State.Running}}|{{.State.StartedAt}}", containerName)
+	if err != nil {
+		return false, 0, 0, 0, 0, 0
+	}
+	inspectParts := strings.SplitN(strings.TrimSpace(inspectOut), "|", 2)
+	if len(inspectParts) == 0 || strings.TrimSpace(inspectParts[0]) != "true" {
+		return false, 0, 0, 0, 0, 0
 	}
 
-	statsOut, err := runCommand("docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}", containerName)
+	statsOut, err := runCommand("docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}", containerName)
 	if err != nil {
-		return true, 0, 0
+		return true, 0, 0, 0, 0, parseStartedAtUptimeSeconds(inspectParts)
 	}
 	parts := strings.Split(strings.TrimSpace(statsOut), "|")
 	cpuPct := 0.0
 	memMB := 0
+	netRxBytes := int64(0)
+	netTxBytes := int64(0)
 	if len(parts) > 0 {
 		cpuRaw := strings.TrimSpace(strings.TrimSuffix(parts[0], "%"))
 		if parsed, parseErr := strconv.ParseFloat(cpuRaw, 64); parseErr == nil {
@@ -245,7 +254,39 @@ func (s *Service) inspectContainerStats(serverID int) (bool, float64, int) {
 			}
 		}
 	}
-	return true, cpuPct, memMB
+	if len(parts) > 2 {
+		netParts := strings.Split(parts[2], "/")
+		if len(netParts) > 0 {
+			if parsed, parseErr := parseHumanSizeToBytes(netParts[0]); parseErr == nil {
+				netRxBytes = parsed
+			}
+		}
+		if len(netParts) > 1 {
+			if parsed, parseErr := parseHumanSizeToBytes(netParts[1]); parseErr == nil {
+				netTxBytes = parsed
+			}
+		}
+	}
+	return true, cpuPct, memMB, netRxBytes, netTxBytes, parseStartedAtUptimeSeconds(inspectParts)
+}
+
+func parseStartedAtUptimeSeconds(inspectParts []string) int64 {
+	if len(inspectParts) < 2 {
+		return 0
+	}
+	startedAt := strings.TrimSpace(inspectParts[1])
+	if startedAt == "" || strings.HasPrefix(startedAt, "0001-01-01") {
+		return 0
+	}
+	startTime, err := time.Parse(time.RFC3339Nano, startedAt)
+	if err != nil {
+		return 0
+	}
+	uptime := time.Since(startTime)
+	if uptime < 0 {
+		return 0
+	}
+	return int64(uptime.Seconds())
 }
 
 func (s *Service) ensureServerLogStream(serverID int, replayBufferedLogs bool, silentIfStopped bool, includeHistoricalTail bool) {

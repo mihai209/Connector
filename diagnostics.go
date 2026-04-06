@@ -35,6 +35,14 @@ func (s *Service) getDiagnosticsSnapshot() ConnectorDiagnosticsSnapshot {
 	return snapshot
 }
 
+func (s *Service) refreshDiagnosticsSnapshot() ConnectorDiagnosticsSnapshot {
+	s.diagnosticsMu.Lock()
+	s.diagnosticsCacheAt = time.Time{}
+	s.diagnosticsCache = ConnectorDiagnosticsSnapshot{}
+	s.diagnosticsMu.Unlock()
+	return s.getDiagnosticsSnapshot()
+}
+
 func (s *Service) recordSFTPAuthResult(success bool, err error) {
 	s.diagnosticsMu.Lock()
 	defer s.diagnosticsMu.Unlock()
