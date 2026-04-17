@@ -496,6 +496,12 @@ func (s *Service) runEggInstallation(serverID int, serverPath string, cfg Server
 	if networkMode == "" {
 		networkMode = strings.TrimSpace(s.cfg.Docker.Network.Name)
 	}
+	// Force installers to use bridge network if the system-wide network is internal.
+	// This ensures dependencies can be downloaded during the installation phase.
+	if s.cfg.Docker.Network.IsInternal {
+		bootInfo("forcing 'bridge' network for installer session due to internal network configuration")
+		networkMode = "bridge"
+	}
 	if networkMode != "" {
 		args = append(args, "--network", networkMode)
 	}

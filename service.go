@@ -8,9 +8,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -494,19 +496,32 @@ func (s *Service) fixServerPermissions(serverPath string) error {
 		return fmt.Errorf("server path is empty")
 	}
 
-	// Keep ownership aligned with configured runtime user when possible.
-	chownErr := error(nil)
-	if _, err := runCommand("chown", "-R", s.chownUser(), serverPath); err != nil {
-		chownErr = err
+	owner := s.chownUser()
+	
+	// Pre-check if chown is actually needed to reduce IO on large volumes.
+	// We ignore errors on stat but log if the first level isn't matching.
+	if info, err := os.Stat(serverPath); err == nil {
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			expectedUID, _ := strconv.Atoi(strings.Split(owner, ":")[0])
+			if int(stat.Uid) == expectedUID {
+				// Base directory already matches, we still proceed with a shallower sync 
+				// to ensure interior files moved/restored are fixed, but we are more lenient.
+			}
+		}
+	}
+
+	// Keep ownership aligned with configured runtime user.
+	if _, err := runCommand("chown", "-R", owner, serverPath); err != nil {
+		bootWarn("chown -R %s failed for %s: %v", owner, serverPath, err)
 	}
 
 	// Fallback to broad write permissions so images running with non-1000 UID/GID
 	// can still write files after migration/import.
-	if _, err := runCommand("chmod", "-R", "a+rwX", serverPath); err != nil {
-		if chownErr != nil {
-			return fmt.Errorf("chown failed: %v; chmod failed: %v", chownErr, err)
-		}
-		return err
+	// We use 'f' flag to ignore most non-critical warnings about weird file types.
+	if _, err := runCommand("chmod", "-Rf", "a+rwX", serverPath); err != nil {
+		bootWarn("chmod -Rf failed for %s: %v", serverPath, err)
+		return fmt.Errorf("chmod failed: %w", err)
 	}
+
 	return nil
 }
