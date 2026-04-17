@@ -92,6 +92,10 @@ func (s *Service) resolveDNSServersForRepair() []string {
 	servers := []string{dockerEmbeddedDNS}
 	seen := map[string]struct{}{dockerEmbeddedDNS: {}}
 
+	// Add public fallbacks for better internet access during installation/updates
+	publicFallbacks := []string{"1.1.1.1", "8.8.8.8", "1.0.0.1", "8.8.4.4"}
+	
+	// First, add configured DNS
 	for _, value := range normalizeDNSServers(s.cfg.Docker.Network.DNS) {
 		if _, exists := seen[value]; exists {
 			continue
@@ -111,6 +115,15 @@ func (s *Service) resolveDNSServersForRepair() []string {
 		}
 	}
 
+	// Always append some public fallbacks as a last resort to ensure internet access
+	for _, value := range publicFallbacks {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		servers = append(servers, value)
+	}
+
 	return servers
 }
 
@@ -118,16 +131,11 @@ func (s *Service) resolveDNSServersForRepair() []string {
 // Keep Docker embedded DNS first so name resolution works even when public resolvers
 // are blocked in provider environments.
 func (s *Service) effectiveContainerDNSServers() []string {
-	servers := []string{dockerEmbeddedDNS}
-	seen := map[string]struct{}{dockerEmbeddedDNS: {}}
-	for _, value := range normalizeDNSServers(s.cfg.Docker.Network.DNS) {
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		servers = append(servers, value)
-	}
-	return servers
+	// Re-use the repair logic which includes:
+	// 1. Docker embedded DNS (127.0.0.11)
+	// 2. Panel configured DNS servers
+	// 3. Host /etc/resolv.conf fallback if #2 is empty
+	return s.resolveDNSServersForRepair()
 }
 
 func readHostDNSServers() []string {

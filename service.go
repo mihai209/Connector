@@ -520,7 +520,13 @@ func (s *Service) fixServerPermissions(serverPath string) error {
 	// We use 'f' flag to ignore most non-critical warnings about weird file types.
 	if _, err := runCommand("chmod", "-Rf", "a+rwX", serverPath); err != nil {
 		bootWarn("chmod -Rf failed for %s: %v", serverPath, err)
-		return fmt.Errorf("chmod failed: %w", err)
+	}
+
+	// Ensure execution bits are preserved for common script/binary extensions
+	// This helps with eggs that rely on specific .sh or .bin files to start.
+	exts := []string{"*.sh", "*.bin", "*.pl", "*.py", "*.js"}
+	for _, ext := range exts {
+		_, _ = runCommand("find", serverPath, "-maxdepth", "3", "-name", ext, "-exec", "chmod", "+x", "{}", ";")
 	}
 
 	return nil
