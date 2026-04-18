@@ -194,6 +194,9 @@ type Service struct {
 	lastSFTPAuthAt      time.Time
 	lastSFTPAuthSuccess bool
 	lastSFTPAuthError   string
+	events              *Bus
+	environments        map[int]ProcessEnvironment
+	environmentsMu      sync.RWMutex
 }
 
 type LogBuffer struct {

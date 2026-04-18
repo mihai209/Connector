@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -79,6 +81,8 @@ func NewService(cfg Config, volumesPath string) *Service {
 		metrics: ConnectorMetrics{
 			StartTime: time.Now().UTC(),
 		},
+		events: NewBus(),
+		environments: make(map[int]ProcessEnvironment),
 	}
 }
 
@@ -104,6 +108,7 @@ func (s *Service) Start() error {
 
 	bootInfo("starting docker event monitor")
 	go s.monitorDockerEvents()
+
 	bootInfo("starting websocket connector loop")
 	go s.runWSLoop()
 
@@ -174,10 +179,10 @@ func (s *Service) startAPIServer() {
 		s.handleMetrics(w, r)
 	})
 
+	// Server Management API
 	mux.HandleFunc("/api/servers/", func(w http.ResponseWriter, r *http.Request) {
-		// Example target: /api/servers/123/files/read
 		pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(pathParts) < 4 || pathParts[0] != "api" || pathParts[1] != "servers" || pathParts[3] != "files" {
+		if len(pathParts) < 3 {
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
@@ -188,9 +193,21 @@ func (s *Service) startAPIServer() {
 			return
 		}
 
-		if r.Method == http.MethodPost && len(pathParts) >= 5 && pathParts[4] == "read" {
-			s.handleHTTPFileRead(w, r, serverID)
-			return
+		// Routing for server sub-resources
+		if len(pathParts) >= 4 {
+			switch pathParts[3] {
+			case "files":
+				if len(pathParts) >= 5 && pathParts[4] == "read" && r.Method == http.MethodPost {
+					s.handleHTTPFileRead(w, r, serverID)
+					return
+				}
+			case "power":
+				s.tokenAuthMiddleware(s.handleServerPowerAPI)(w, r)
+				return
+			case "stats":
+				s.tokenAuthMiddleware(s.handleServerStatsAPI)(w, r)
+				return
+			}
 		}
 
 		http.Error(w, "Not found", http.StatusNotFound)
@@ -449,6 +466,7 @@ func (s *Service) marshalMessage(input map[string]interface{}, out interface{}) 
 	return json.Unmarshal(raw, out)
 }
 
+
 func (s *Service) allowServerCommand(serverID int) bool {
 	if serverID <= 0 {
 		return false
@@ -530,4 +548,75 @@ func (s *Service) fixServerPermissions(serverPath string) error {
 	}
 
 	return nil
+}
+func (s *Service) getServerStats(serverID int) (map[string]interface{}, error) {
+	running, cpuPct, memMB, netRxBytes, netTxBytes, uptimeSeconds := s.inspectContainerStats(serverID)
+	diskMB := s.getDiskUsageMB(serverID)
+	return map[string]interface{}{
+		"running":        running,
+		"cpu":            cpuPct,
+		"memory":         memMB,
+		"disk":           diskMB,
+		"network_rx":     netRxBytes,
+		"network_tx":     netTxBytes,
+		"uptime_seconds": uptimeSeconds,
+	}, nil
+}
+
+func (s *Service) inspectContainerState(serverID int) map[string]interface{} {
+	containerName := fmt.Sprintf("cpanel-%d", serverID)
+	out, err := runCommand("docker", "inspect", "-f", "{{json .State}}", containerName)
+	if err != nil {
+		return nil
+	}
+	var state map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &state); err != nil {
+		return nil
+	}
+	return state
+}
+func (s *Service) monitorDockerEvents() {
+	cmd := exec.Command("docker", "events", "--filter", "event=start", "--filter", "event=stop", "--filter", "event=die", "--format", "{{.ID}}|{{.Action}}")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		bootWarn("failed to start docker event monitor: %v", err)
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		bootWarn("failed to start docker event monitor: %v", err)
+		return
+	}
+	defer cmd.Wait()
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Split(line, "|")
+		if len(parts) < 2 {
+			continue
+		}
+		containerID := parts[0]
+		action := parts[1]
+
+		inspectOut, err := runCommand("docker", "inspect", "-f", "{{.Name}}", containerID)
+		if err != nil {
+			continue
+		}
+		name := strings.Trim(strings.TrimSpace(inspectOut), "/")
+		if !strings.HasPrefix(name, "cpanel-") {
+			continue
+		}
+		serverID, _ := strconv.Atoi(strings.TrimPrefix(name, "cpanel-"))
+		if serverID <= 0 {
+			continue
+		}
+
+		env := s.Environment(serverID)
+		switch action {
+		case "start":
+			env.SetState(StateRunning)
+		case "stop", "die":
+			env.SetState(StateOffline)
+		}
+	}
 }

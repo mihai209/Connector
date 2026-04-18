@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -51,53 +52,37 @@ func (s *Service) executePowerActionWithConfig(serverID int, action, stopCommand
 		return fmt.Errorf("invalid power payload")
 	}
 
-	containerName := fmt.Sprintf("cpanel-%d", serverID)
+	env := s.Environment(serverID)
 	switch action {
 	case "start":
-		if _, err := runCommand("docker", "start", containerName); err != nil {
-			if shouldRecoverMissingContainerOnStart(err) {
-				s.sendConsoleOutput(serverID, "\x1b[1;33m[!] Runtime container is missing. Rebuilding it from the last saved install config...\x1b[0m\n")
-				if recoverErr := s.recreateMissingRuntimeContainer(serverID, runtimeCfg); recoverErr != nil {
-					return fmt.Errorf("%v (auto-recreate failed: %v)", err, recoverErr)
-				}
-			} else {
-				return err
+		exists, _ := env.Exists()
+		if !exists {
+			s.sendConsoleOutput(serverID, "\x1b[1;33m[!] Runtime environment is missing. Rebuilding it from the last saved install config...\x1b[0m\n")
+			if recoverErr := s.recreateMissingRuntimeContainer(serverID, runtimeCfg); recoverErr != nil {
+				return fmt.Errorf("auto-recreate failed: %v", recoverErr)
 			}
 		}
-		s.repairServerContainerDNS(serverID)
-		time.Sleep(logAttachRetryDelay)
-		s.ensureServerLogStream(serverID, false, true, false)
+		if err := env.Start(context.Background()); err != nil {
+			return err
+		}
+		_ = env.Attach(context.Background())
 		return nil
 	case "stop":
 		if stopCommand != "" {
-			if err := s.sendCommandToServerStdin(serverID, containerName, stopCommand); err != nil {
-				bootWarn("graceful stop stdin failed server=%d error=%v", serverID, err)
-			}
+			_ = env.SendCommand(stopCommand)
 			time.Sleep(2 * time.Second)
 		}
-		if _, err := runCommand("docker", "stop", containerName); err != nil {
+		if err := env.Stop(context.Background(), 30*time.Second); err != nil {
 			return err
 		}
 		s.cleanupServerStreams(serverID)
 		s.clearBufferedLogs(serverID)
 		return nil
 	case "restart":
-		if _, err := runCommand("docker", "restart", containerName); err != nil {
-			if shouldRecoverMissingContainerOnStart(err) {
-				s.sendConsoleOutput(serverID, "\x1b[1;33m[!] Runtime container is missing during restart. Rebuilding it from the last saved install config...\x1b[0m\n")
-				if recoverErr := s.recreateMissingRuntimeContainer(serverID, runtimeCfg); recoverErr != nil {
-					return fmt.Errorf("%v (auto-recreate failed: %v)", err, recoverErr)
-				}
-			} else {
-				return err
-			}
-		}
-		s.repairServerContainerDNS(serverID)
-		time.Sleep(logAttachRetryDelay)
-		s.ensureServerLogStream(serverID, false, true, false)
-		return nil
+		_ = env.Stop(context.Background(), 30*time.Second)
+		return env.Start(context.Background())
 	case "kill":
-		if _, err := runCommand("docker", "kill", containerName); err != nil {
+		if err := env.Terminate(context.Background()); err != nil {
 			return err
 		}
 		s.cleanupServerStreams(serverID)
@@ -143,7 +128,8 @@ func (s *Service) recreateMissingRuntimeContainer(serverID int, fallbackCfg Serv
 	if err := s.removeContainerIfExists(serverID); err != nil {
 		return fmt.Errorf("cleanup stale container failed: %w", err)
 	}
-	if _, err := s.createRuntimeContainer(serverID, serverPath, cfg, true); err != nil {
+	env := s.Environment(serverID)
+	if err := env.Create(cfg, serverPath); err != nil {
 		return err
 	}
 	return nil
@@ -160,8 +146,7 @@ func (s *Service) executeServerCommand(serverID int, command string) error {
 	if !s.allowServerCommand(serverID) {
 		return fmt.Errorf("command throttled: too many commands in a short time")
 	}
-	containerName := fmt.Sprintf("cpanel-%d", serverID)
-	return s.sendCommandToServerStdin(serverID, containerName, command)
+	return s.Environment(serverID).SendCommand(command)
 }
 
 func (s *Service) handlePowerAction(message map[string]interface{}) {

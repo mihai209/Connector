@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -83,8 +84,8 @@ func (s *Service) handleInstallServer(message map[string]interface{}) {
 		startAfterInstall = *payload.Config.StartAfterInstall
 	}
 
-	containerID, err := s.createRuntimeContainer(serverID, serverPath, payload.Config, startAfterInstall)
-	if err != nil {
+	env := s.Environment(serverID)
+	if err := env.Create(payload.Config, serverPath); err != nil {
 		s.sendInstallFail(serverID, err.Error())
 		return
 	}
@@ -92,14 +93,14 @@ func (s *Service) handleInstallServer(message map[string]interface{}) {
 	_ = s.sendJSON(map[string]interface{}{
 		"type":        "install_success",
 		"serverId":    serverID,
-		"containerId": strings.TrimSpace(containerID),
 		"started":     startAfterInstall,
 		"status":      map[bool]string{true: "running", false: "offline"}[startAfterInstall],
 	})
 
 	if startAfterInstall {
 		time.Sleep(logAttachRetryDelay)
-		s.ensureServerLogStream(serverID, false, true, false)
+		_ = env.Start(context.Background())
+		_ = env.Attach(context.Background())
 	}
 }
 
@@ -131,20 +132,22 @@ func (s *Service) removeContainerIfExists(serverID int) error {
 }
 
 func (s *Service) ensureContainerStoppedForReinstall(serverID int) error {
-	containerName := fmt.Sprintf("cpanel-%d", serverID)
-	if !s.dockerContainerRunning(serverID) {
+	env := s.Environment(serverID)
+	running, _ := env.IsRunning(context.Background())
+	if !running {
 		return nil
 	}
 
 	s.sendConsoleOutput(serverID, "\x1b[1;34m[*] Waiting for server to stop before reinstall...\x1b[0m\n")
-	if _, err := runCommand("docker", "stop", "-t", "30", containerName); err != nil {
+	if err := env.Stop(context.Background(), 30*time.Second); err != nil {
 		return fmt.Errorf("reinstall: failed to stop running container: %w", err)
 	}
 	s.cleanupServerStreams(serverID)
 
 	deadline := time.Now().Add(35 * time.Second)
 	for time.Now().Before(deadline) {
-		if !s.dockerContainerRunning(serverID) {
+		running, _ := env.IsRunning(context.Background())
+		if !running {
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -192,274 +195,17 @@ func (s *Service) chownServerPath(serverPath string) error {
 	return err
 }
 
-func (s *Service) createRuntimeContainer(serverID int, serverPath string, cfg ServerInstallConfig, startAfterInstall bool) (string, error) {
-	containerName := fmt.Sprintf("cpanel-%d", serverID)
-	args := []string{"create", "--name", containerName}
-	networkMode := strings.TrimSpace(s.cfg.Docker.Network.Mode)
-	if networkMode == "" {
-		networkMode = strings.TrimSpace(s.cfg.Docker.Network.Name)
+func (s *Service) Environment(serverID int) ProcessEnvironment {
+	s.environmentsMu.Lock()
+	defer s.environmentsMu.Unlock()
+
+	if env, ok := s.environments[serverID]; ok {
+		return env
 	}
 
-	hostname := normalizeBrandHostname(cfg.BrandName)
-	args = append(args, "--hostname", hostname)
-	domainname := strings.TrimSpace(s.cfg.Docker.Domainname)
-	if domainname != "" {
-		args = append(args, "--domainname", domainname)
-	}
-	for _, hostAlias := range buildContainerSelfHostAliases(hostname, domainname) {
-		args = append(args, "--add-host", fmt.Sprintf("%s:127.0.0.1", hostAlias))
-	}
-	args = append(args, "-t", "-i")
-	args = append(args, "-w", "/home/container")
-	args = append(args, "-v", fmt.Sprintf("%s:/home/container", serverPath))
-	for _, mount := range cfg.Mounts {
-		source := strings.TrimSpace(mount.Source)
-		target := strings.TrimSpace(mount.Target)
-		if source == "" || target == "" {
-			continue
-		}
-		if !strings.HasPrefix(target, "/") {
-			target = "/" + strings.TrimLeft(target, "/")
-		}
-		mountArg := fmt.Sprintf("%s:%s", source, target)
-		if mount.ReadOnly {
-			mountArg += ":ro"
-		}
-		args = append(args, "-v", mountArg)
-	}
-	if networkMode != "" {
-		args = append(args, "--network", networkMode)
-	}
-	for _, dns := range s.effectiveContainerDNSServers() {
-		args = append(args, "--dns", dns)
-	}
-	if s.cfg.Docker.TmpfsSize > 0 {
-		// Java/Netty/SQLite extract native libraries to /tmp and need execute permission.
-		args = append(args, "--tmpfs", fmt.Sprintf("/tmp:rw,exec,nosuid,nodev,size=%dm", s.cfg.Docker.TmpfsSize))
-	}
-
-	pidsLimit := int64(cfg.PidsLimit)
-	if pidsLimit <= 0 {
-		pidsLimit = s.cfg.Docker.ContainerPidLimit
-	}
-	if pidsLimit > 0 {
-		args = append(args, "--pids-limit", strconv.FormatInt(pidsLimit, 10))
-	}
-	if s.cfg.Docker.Rootless.Enabled {
-		uid := s.cfg.Docker.Rootless.ContainerUID
-		gid := s.cfg.Docker.Rootless.ContainerGID
-		if uid < 0 {
-			uid = 0
-		}
-		if gid < 0 {
-			gid = 0
-		}
-		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
-	}
-
-	if cfg.Memory > 0 {
-		memoryLimit := cfg.Memory + 128 // keep small overhead for JVM and similar runtimes
-		args = append(args, "--memory", fmt.Sprintf("%dm", memoryLimit))
-
-		switch {
-		case cfg.SwapLimit < 0:
-			args = append(args, "--memory-swap", "-1")
-		case cfg.SwapLimit == 0:
-			args = append(args, "--memory-swap", fmt.Sprintf("%dm", memoryLimit))
-		default:
-			args = append(args, "--memory-swap", fmt.Sprintf("%dm", memoryLimit+cfg.SwapLimit))
-		}
-	}
-	if cfg.CPU > 0 {
-		cpus := float64(cfg.CPU) / 100.0
-		if cpus < 0.1 {
-			cpus = 0.1
-		}
-		args = append(args, "--cpus", fmt.Sprintf("%.2f", cpus))
-	}
-	if cfg.IOWeight >= 10 && cfg.IOWeight <= 1000 {
-		args = append(args, "--blkio-weight", strconv.Itoa(cfg.IOWeight))
-	}
-	if cfg.OOMKillDisable {
-		args = append(args, "--oom-kill-disable")
-	}
-	if cfg.OOMScoreAdj >= -1000 && cfg.OOMScoreAdj <= 1000 && cfg.OOMScoreAdj != 0 {
-		args = append(args, "--oom-score-adj", strconv.Itoa(cfg.OOMScoreAdj))
-	}
-
-	if !strings.EqualFold(networkMode, "host") {
-		for _, port := range cfg.Ports {
-			if port.Host <= 0 || port.Container <= 0 {
-				continue
-			}
-			protocol := strings.ToLower(strings.TrimSpace(port.Protocol))
-			if protocol == "" {
-				protocol = "tcp"
-			}
-			args = append(args, "-p", buildDockerPublishArg(port.IP, port.Host, port.Container, protocol))
-		}
-	}
-
-	for key, value := range cfg.Env {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", key, stringifyEnvValue(value)))
-	}
-	args = append(args, "-e", fmt.Sprintf("STARTUP=%s", cfg.Startup))
-
-	args = append(args, cfg.Image)
-	if strings.EqualFold(strings.TrimSpace(cfg.StartupMode), "command") && strings.TrimSpace(cfg.Startup) != "" {
-		args = append(args, "/bin/bash", "-lc", cfg.Startup)
-	}
-
-	containerID, err := runCommand("docker", args...)
-	if err != nil {
-		if shouldRetryContainerCreateWithoutHostIP(err) {
-			fallbackArgs, changed := buildContainerCreateArgsWithoutHostIP(args)
-			if changed {
-				s.sendConsoleOutput(serverID, "\x1b[1;33m[!] Docker publish bind failed on allocation IP. Retrying with wildcard host bind (0.0.0.0)...\x1b[0m\n")
-				containerID, err = runCommand("docker", fallbackArgs...)
-			}
-		}
-	}
-	if err != nil {
-		return "", err
-	}
-
-	if startAfterInstall {
-		if _, err := runCommand("docker", "start", containerName); err != nil {
-			return "", err
-		}
-		s.repairServerContainerDNS(serverID)
-	}
-	return strings.TrimSpace(containerID), nil
-}
-
-func buildContainerSelfHostAliases(hostname, domainname string) []string {
-	seen := make(map[string]struct{})
-	aliases := make([]string, 0, 2)
-	add := func(raw string) {
-		value := strings.ToLower(strings.TrimSpace(raw))
-		value = strings.Trim(value, ".")
-		if value == "" || strings.ContainsAny(value, " \t\r\n") {
-			return
-		}
-		if _, exists := seen[value]; exists {
-			return
-		}
-		seen[value] = struct{}{}
-		aliases = append(aliases, value)
-	}
-
-	add(hostname)
-	if strings.TrimSpace(hostname) != "" && strings.TrimSpace(domainname) != "" {
-		add(strings.Trim(strings.TrimSpace(hostname), ".") + "." + strings.Trim(strings.TrimSpace(domainname), "."))
-	}
-	return aliases
-}
-
-func stringifyEnvValue(value interface{}) string {
-	switch v := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return v
-	case float64:
-		if v == float64(int64(v)) {
-			return strconv.FormatInt(int64(v), 10)
-		}
-		return strconv.FormatFloat(v, 'f', -1, 64)
-	case bool:
-		if v {
-			return "true"
-		}
-		return "false"
-	default:
-		raw, _ := json.Marshal(v)
-		if len(raw) == 0 {
-			return ""
-		}
-		if string(raw) == "null" {
-			return ""
-		}
-		return string(raw)
-	}
-}
-
-func buildDockerPublishArg(hostIP string, hostPort, containerPort int, protocol string) string {
-	host := strings.TrimSpace(hostIP)
-	if host == "" {
-		return fmt.Sprintf("%d:%d/%s", hostPort, containerPort, protocol)
-	}
-
-	// Docker expects IPv6 bind addresses wrapped in [].
-	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-		host = "[" + host + "]"
-	}
-
-	return fmt.Sprintf("%s:%d:%d/%s", host, hostPort, containerPort, protocol)
-}
-
-func shouldRetryContainerCreateWithoutHostIP(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "network is unreachable") ||
-		strings.Contains(msg, "cannot assign requested address")
-}
-
-func buildContainerCreateArgsWithoutHostIP(args []string) ([]string, bool) {
-	if len(args) == 0 {
-		return args, false
-	}
-	rewritten := make([]string, 0, len(args))
-	changed := false
-	for i := 0; i < len(args); i++ {
-		current := args[i]
-		if current == "-p" && (i+1) < len(args) {
-			mapped, didStrip := stripHostIPFromDockerPublishArg(args[i+1])
-			rewritten = append(rewritten, "-p", mapped)
-			if didStrip {
-				changed = true
-			}
-			i++
-			continue
-		}
-		rewritten = append(rewritten, current)
-	}
-	return rewritten, changed
-}
-
-func stripHostIPFromDockerPublishArg(raw string) (string, bool) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return value, false
-	}
-
-	// IPv6 publish format: [addr]:hostPort:containerPort/proto
-	if strings.HasPrefix(value, "[") {
-		closing := strings.Index(value, "]:")
-		if closing == -1 {
-			return value, false
-		}
-		tail := strings.TrimSpace(value[closing+2:])
-		if strings.Count(tail, ":") == 1 && strings.Contains(tail, "/") {
-			return tail, true
-		}
-		return value, false
-	}
-
-	// IPv4/hostname publish format: hostIP:hostPort:containerPort/proto
-	if strings.Count(value, ":") >= 2 {
-		first := strings.Index(value, ":")
-		if first > 0 {
-			tail := strings.TrimSpace(value[first+1:])
-			if strings.Count(tail, ":") == 1 && strings.Contains(tail, "/") {
-				return tail, true
-			}
-		}
-	}
-
-	return value, false
+	env := NewDockerEnvironment(s, serverID)
+	s.environments[serverID] = env
+	return env
 }
 
 func (s *Service) runEggInstallation(serverID int, serverPath string, cfg ServerInstallConfig) error {
