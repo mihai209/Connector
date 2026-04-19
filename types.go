@@ -43,6 +43,11 @@ const (
 	serverStatsInterval                    = 2 * time.Second
 	commandRateWindow                      = 5 * time.Second
 	commandRateLimit                       = 40
+	commandBurstLimit                      = 100
+	commandStartupGraceLimit               = 200
+	commandStartupGraceWindow              = 60 * time.Second
+	commandQueueSize                       = 100
+	commandQueueDrainInterval              = 100 * time.Millisecond
 	maxEditableFileBytes             int64 = 5 * 1024 * 1024
 	maxRemoteDownloadBytes           int64 = 512 * 1024 * 1024
 	remoteDownloadTimeout                  = 8 * time.Minute
@@ -197,6 +202,8 @@ type Service struct {
 	events              *Bus
 	environments        map[int]ProcessEnvironment
 	environmentsMu      sync.RWMutex
+	commandQueues       map[int]chan string
+	commandQueuesMu     sync.Mutex
 }
 
 type LogBuffer struct {

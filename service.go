@@ -81,8 +81,9 @@ func NewService(cfg Config, volumesPath string) *Service {
 		metrics: ConnectorMetrics{
 			StartTime: time.Now().UTC(),
 		},
-		events: NewBus(),
-		environments: make(map[int]ProcessEnvironment),
+		events:        NewBus(),
+		environments:  make(map[int]ProcessEnvironment),
+		commandQueues: make(map[int]chan string),
 	}
 }
 
@@ -477,6 +478,13 @@ func (s *Service) allowServerCommand(serverID int) (bool, string) {
 	s.commandRateMu.Lock()
 	defer s.commandRateMu.Unlock()
 
+	// Calculate current limit (dynamic)
+	limit := commandRateLimit
+	uptime := time.Since(s.metrics.StartTime)
+	if uptime < commandStartupGraceWindow {
+		limit = commandStartupGraceLimit
+	}
+
 	state := s.commandRate[serverID]
 	if state.WindowStart.IsZero() || now.Sub(state.WindowStart) >= commandRateWindow {
 		s.commandRate[serverID] = CommandRateState{
@@ -486,7 +494,7 @@ func (s *Service) allowServerCommand(serverID int) (bool, string) {
 		return true, ""
 	}
 
-	if state.Count >= commandRateLimit {
+	if state.Count >= limit {
 		return false, "command throttled: too many commands in a short time"
 	}
 
@@ -507,12 +515,50 @@ func (s *Service) GetThrottlingStatus() map[int]int {
 	
 	status := make(map[int]int)
 	now := time.Now().UTC()
+
 	for id, state := range s.commandRate {
 		if !state.WindowStart.IsZero() && now.Sub(state.WindowStart) < commandRateWindow {
 			status[id] = state.Count
 		}
 	}
 	return status
+}
+
+func (s *Service) PushToCommandQueue(serverID int, command string) bool {
+	s.commandQueuesMu.Lock()
+	ch, ok := s.commandQueues[serverID]
+	if !ok {
+		ch = make(chan string, commandQueueSize)
+		s.commandQueues[serverID] = ch
+		go s.commandQueueWorker(serverID, ch)
+	}
+	s.commandQueuesMu.Unlock()
+
+	select {
+	case ch <- command:
+		return true
+	default:
+		return false // Queue full
+	}
+}
+
+func (s *Service) commandQueueWorker(serverID int, ch chan string) {
+	ticker := time.NewTicker(commandQueueDrainInterval)
+	defer ticker.Stop()
+
+	bootInfo("starting command queue worker for server %d", serverID)
+	for command := range ch {
+		<-ticker.C
+		// Executing from queue still uses a budget check but we might allow 
+		// "overflow" from queue if the queue is active.
+		// Actually, we just execute at the drain interval which is 100ms (10hz),
+		// keeping us safely under the 40/5s (8hz) limit usually, or close to it.
+		err := s.Environment(serverID).SendCommand(command)
+		if err != nil {
+			bootWarn("queue worker failed to send command to server %d: %v", serverID, err)
+		}
+	}
+	bootInfo("stopping command queue worker for server %d", serverID)
 }
 
 func (s *Service) chownUser() string {

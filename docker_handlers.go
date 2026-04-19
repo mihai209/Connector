@@ -143,11 +143,20 @@ func (s *Service) executeServerCommand(serverID int, command string) error {
 	if command == "" {
 		return fmt.Errorf("command is empty")
 	}
+
 	allowed, errStr := s.allowServerCommand(serverID)
-	if !allowed {
-		return fmt.Errorf("%s", errStr)
+	if allowed {
+		return s.Environment(serverID).SendCommand(command)
 	}
-	return s.Environment(serverID).SendCommand(command)
+
+	// If throttled, try to queue it instead of failing
+	if s.PushToCommandQueue(serverID, command) {
+		// Log internal audit/diagnostic if needed, but return success to panel
+		bootInfo("command queued for server %d due to rate limit: %s", serverID, command)
+		return nil
+	}
+
+	return fmt.Errorf("%s (queue full)", errStr)
 }
 
 func (s *Service) handlePowerAction(message map[string]interface{}) {
