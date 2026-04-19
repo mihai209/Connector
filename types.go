@@ -204,6 +204,7 @@ type Service struct {
 	environmentsMu      sync.RWMutex
 	commandQueues        map[int][]string
 	commandQueuesPending map[int]map[string]bool
+	activeWorkers        map[int]bool
 	commandQueuesMu      sync.Mutex
 }
 

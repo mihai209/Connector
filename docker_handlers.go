@@ -151,8 +151,6 @@ func (s *Service) executeServerCommand(serverID int, command string) error {
 
 	// If throttled, try to queue it instead of failing
 	if s.PushToCommandQueue(serverID, command) {
-		// Log internal audit/diagnostic if needed, but return success to panel
-		bootInfo("command queued for server %d due to rate limit: %s", serverID, command)
 		return nil
 	}
 

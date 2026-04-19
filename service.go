@@ -85,6 +85,7 @@ func NewService(cfg Config, volumesPath string) *Service {
 		environments:  make(map[int]ProcessEnvironment),
 		commandQueues: make(map[int][]string),
 		commandQueuesPending: make(map[int]map[string]bool),
+		activeWorkers: make(map[int]bool),
 	}
 	bootInfo("Command budget and queues initialized (Cleared : 0)")
 	return s
@@ -557,10 +558,9 @@ func (s *Service) PushToCommandQueue(serverID int, command string) bool {
 	s.commandQueues[serverID] = append(s.commandQueues[serverID], command)
 	s.commandQueuesPending[serverID][command] = true
 
-	// If this was the first command, start a worker if not already implied.
-	// We'll use a single global worker pool approach or per-server.
-	// For simplicity, we'll keep the per-server goroutine if it's the first.
-	if len(s.commandQueues[serverID]) == 1 {
+	// If no worker is running for this server, start one
+	if !s.activeWorkers[serverID] {
+		s.activeWorkers[serverID] = true
 		go s.commandQueueWorker(serverID)
 	}
 
@@ -571,17 +571,16 @@ func (s *Service) commandQueueWorker(serverID int) {
 	ticker := time.NewTicker(commandQueueDrainInterval)
 	defer ticker.Stop()
 
-	bootInfo("starting command queue worker for server %d", serverID)
 	for {
-		<-ticker.C
-
 		s.commandQueuesMu.Lock()
 		queue := s.commandQueues[serverID]
 		pending := s.commandQueuesPending[serverID]
+		
 		if len(queue) == 0 {
 			// No more commands, exit worker
 			delete(s.commandQueues, serverID)
 			delete(s.commandQueuesPending, serverID)
+			s.activeWorkers[serverID] = false
 			s.commandQueuesMu.Unlock()
 			break
 		}
@@ -592,13 +591,14 @@ func (s *Service) commandQueueWorker(serverID int) {
 		delete(pending, command)
 		s.commandQueuesMu.Unlock()
 
-		bootInfo("[MC_QUEUE] executing from queue for server %d: %s", serverID, command)
 		err := s.Environment(serverID).SendCommand(command)
 		if err != nil {
 			bootWarn("queue worker failed to send command to server %d: %v", serverID, err)
 		}
+
+		// Wait for next pulse before pulling next command
+		<-ticker.C
 	}
-	bootInfo("stopping command queue worker for server %d", serverID)
 }
 
 func (s *Service) chownUser() string {

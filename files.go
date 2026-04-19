@@ -1360,7 +1360,18 @@ func (s *Service) handleFilesAction(action string, message map[string]interface{
 		_, _ = runCommand("chown", "-R", s.chownUser(), targetPath)
 	case "list_files":
 		if _, err := secureStat(serverRoot, currentDir); err != nil {
-			sendErr("directory not found")
+			// Silent return for list_files to avoid spamming "directory not found"
+			// during administrative background checks.
+			payload := map[string]interface{}{
+				"type":      "file_list",
+				"serverId":  serverID,
+				"directory": directory,
+				"files":     []FileListEntry{},
+			}
+			if requestId != "" {
+				payload["requestId"] = requestId
+			}
+			_ = s.sendJSON(payload)
 			return
 		}
 	}
