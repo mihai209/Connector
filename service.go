@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -591,6 +592,7 @@ func (s *Service) commandQueueWorker(serverID int) {
 		delete(pending, command)
 		s.commandQueuesMu.Unlock()
 
+		log.Printf("INFO: [MC_QUEUE] draining command for server %d: %s", serverID, command)
 		err := s.Environment(serverID).SendCommand(command)
 		if err != nil {
 			bootWarn("queue worker failed to send command to server %d: %v", serverID, err)

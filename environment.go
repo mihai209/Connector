@@ -257,7 +257,7 @@ func (e *DockerEnvironment) Destroy() error {
 }
 
 func (e *DockerEnvironment) SendCommand(command string) error {
-	return e.svc.executeServerCommand(e.serverID, command)
+	return e.svc.sendCommandToServerStdin(e.serverID, e.containerName, command)
 }
 
 func (e *DockerEnvironment) Attach(ctx context.Context) error {
