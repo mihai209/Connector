@@ -225,7 +225,7 @@ func (s *Service) handleWSMessage(payload []byte) error {
 		}
 	case "get_throttle_status":
 		status := s.GetThrottlingStatus()
-		s.broadcastToCPanel(map[string]interface{}{
+		s.sendJSON(map[string]interface{}{
 			"type": "throttle_status",
 			"status": status,
 		})

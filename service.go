@@ -374,6 +374,7 @@ func (s *Service) sendJSON(v interface{}) error {
 }
 
 func (s *Service) sendError(message string, serverID ...int) {
+
 	payload := map[string]interface{}{
 		"type":    "error",
 		"message": message,
@@ -482,7 +483,7 @@ func (s *Service) allowServerCommand(serverID int) (bool, string) {
 			WindowStart: now,
 			Count:       1,
 		}
-		return true
+		return true, ""
 	}
 
 	if state.Count >= commandRateLimit {
