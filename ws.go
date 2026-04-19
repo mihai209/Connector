@@ -218,6 +218,17 @@ func (s *Service) handleWSMessage(payload []byte) error {
 		s.dispatchWSHandler("server_power", func() { s.handlePowerAction(envelope) })
 	case "server_logs":
 		s.dispatchWSHandler("server_logs", func() { s.handleServerLogs(envelope) })
+	case "reset_throttle":
+		serverID := asInt(envelope["serverId"])
+		if serverID > 0 {
+			s.ResetCommandBudget(serverID)
+		}
+	case "get_throttle_status":
+		status := s.GetThrottlingStatus()
+		s.broadcastToCPanel(map[string]interface{}{
+			"type": "throttle_status",
+			"status": status,
+		})
 	case "server_command":
 		s.dispatchWSHandler("server_command", func() { s.handleServerCommand(envelope) })
 	case "import_sftp_files":

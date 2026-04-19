@@ -467,9 +467,9 @@ func (s *Service) marshalMessage(input map[string]interface{}, out interface{}) 
 }
 
 
-func (s *Service) allowServerCommand(serverID int) bool {
+func (s *Service) allowServerCommand(serverID int) (bool, string) {
 	if serverID <= 0 {
-		return false
+		return false, "invalid server id"
 	}
 
 	now := time.Now().UTC()
@@ -486,12 +486,32 @@ func (s *Service) allowServerCommand(serverID int) bool {
 	}
 
 	if state.Count >= commandRateLimit {
-		return false
+		return false, "command throttled: too many commands in a short time"
 	}
 
 	state.Count++
 	s.commandRate[serverID] = state
-	return true
+	return true, ""
+}
+
+func (s *Service) ResetCommandBudget(serverID int) {
+	s.commandRateMu.Lock()
+	defer s.commandRateMu.Unlock()
+	delete(s.commandRate, serverID)
+}
+
+func (s *Service) GetThrottlingStatus() map[int]int {
+	s.commandRateMu.Lock()
+	defer s.commandRateMu.Unlock()
+	
+	status := make(map[int]int)
+	now := time.Now().UTC()
+	for id, state := range s.commandRate {
+		if !state.WindowStart.IsZero() && now.Sub(state.WindowStart) < commandRateWindow {
+			status[id] = state.Count
+		}
+	}
+	return status
 }
 
 func (s *Service) chownUser() string {

@@ -143,8 +143,9 @@ func (s *Service) executeServerCommand(serverID int, command string) error {
 	if command == "" {
 		return fmt.Errorf("command is empty")
 	}
-	if !s.allowServerCommand(serverID) {
-		return fmt.Errorf("command throttled: too many commands in a short time")
+	allowed, errStr := s.allowServerCommand(serverID)
+	if !allowed {
+		return fmt.Errorf("%s", errStr)
 	}
 	return s.Environment(serverID).SendCommand(command)
 }
