@@ -58,7 +58,7 @@ func NewService(cfg Config, volumesPath string) *Service {
 		downloadLimit = 0
 	}
 
-	return &Service{
+	s := &Service{
 		cfg:                      cfg,
 		volumesPath:              volumes,
 		crashPath:                crashPath,
@@ -83,8 +83,11 @@ func NewService(cfg Config, volumesPath string) *Service {
 		},
 		events:        NewBus(),
 		environments:  make(map[int]ProcessEnvironment),
-		commandQueues: make(map[int]chan string),
+		commandQueues: make(map[int][]string),
+		commandQueuesPending: make(map[int]map[string]bool),
 	}
+	bootInfo("Command budget and queues initialized (Cleared : 0)")
+	return s
 }
 
 func (s *Service) Start() error {
@@ -505,8 +508,18 @@ func (s *Service) allowServerCommand(serverID int) (bool, string) {
 
 func (s *Service) ResetCommandBudget(serverID int) {
 	s.commandRateMu.Lock()
-	defer s.commandRateMu.Unlock()
 	delete(s.commandRate, serverID)
+	s.commandRateMu.Unlock()
+
+	s.commandQueuesMu.Lock()
+	commands := s.commandQueues[serverID]
+	delete(s.commandQueues, serverID)
+	delete(s.commandQueuesPending, serverID)
+	s.commandQueuesMu.Unlock()
+
+	if len(commands) > 0 {
+		bootInfo("Cleared : %d", len(commands))
+	}
 }
 
 func (s *Service) GetThrottlingStatus() map[int]int {
@@ -526,33 +539,60 @@ func (s *Service) GetThrottlingStatus() map[int]int {
 
 func (s *Service) PushToCommandQueue(serverID int, command string) bool {
 	s.commandQueuesMu.Lock()
-	ch, ok := s.commandQueues[serverID]
-	if !ok {
-		ch = make(chan string, commandQueueSize)
-		s.commandQueues[serverID] = ch
-		go s.commandQueueWorker(serverID, ch)
-	}
-	s.commandQueuesMu.Unlock()
+	defer s.commandQueuesMu.Unlock()
 
-	select {
-	case ch <- command:
-		return true
-	default:
-		return false // Queue full
+	if s.commandQueuesPending[serverID] == nil {
+		s.commandQueuesPending[serverID] = make(map[string]bool)
 	}
+
+	// De-duplication check
+	if s.commandQueuesPending[serverID][command] {
+		return true // Already queued, count as success to prevent retries
+	}
+
+	if len(s.commandQueues[serverID]) >= commandQueueSize {
+		return false // Hard limit reached
+	}
+
+	s.commandQueues[serverID] = append(s.commandQueues[serverID], command)
+	s.commandQueuesPending[serverID][command] = true
+
+	// If this was the first command, start a worker if not already implied.
+	// We'll use a single global worker pool approach or per-server.
+	// For simplicity, we'll keep the per-server goroutine if it's the first.
+	if len(s.commandQueues[serverID]) == 1 {
+		go s.commandQueueWorker(serverID)
+	}
+
+	return true
 }
 
-func (s *Service) commandQueueWorker(serverID int, ch chan string) {
+func (s *Service) commandQueueWorker(serverID int) {
 	ticker := time.NewTicker(commandQueueDrainInterval)
 	defer ticker.Stop()
 
 	bootInfo("starting command queue worker for server %d", serverID)
-	for command := range ch {
+	for {
 		<-ticker.C
-		// Executing from queue still uses a budget check but we might allow 
-		// "overflow" from queue if the queue is active.
-		// Actually, we just execute at the drain interval which is 100ms (10hz),
-		// keeping us safely under the 40/5s (8hz) limit usually, or close to it.
+
+		s.commandQueuesMu.Lock()
+		queue := s.commandQueues[serverID]
+		pending := s.commandQueuesPending[serverID]
+		if len(queue) == 0 {
+			// No more commands, exit worker
+			delete(s.commandQueues, serverID)
+			delete(s.commandQueuesPending, serverID)
+			s.commandQueuesMu.Unlock()
+			break
+		}
+
+		// Pop front
+		command := queue[0]
+		s.commandQueues[serverID] = queue[1:]
+		delete(pending, command)
+		s.commandQueuesMu.Unlock()
+
+		bootInfo("[MC_QUEUE] executing from queue for server %d: %s", serverID, command)
 		err := s.Environment(serverID).SendCommand(command)
 		if err != nil {
 			bootWarn("queue worker failed to send command to server %d: %v", serverID, err)

@@ -202,8 +202,9 @@ type Service struct {
 	events              *Bus
 	environments        map[int]ProcessEnvironment
 	environmentsMu      sync.RWMutex
-	commandQueues       map[int]chan string
-	commandQueuesMu     sync.Mutex
+	commandQueues        map[int][]string
+	commandQueuesPending map[int]map[string]bool
+	commandQueuesMu      sync.Mutex
 }
 
 type LogBuffer struct {
