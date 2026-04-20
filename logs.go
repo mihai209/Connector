@@ -375,6 +375,7 @@ func (s *Service) restoreRunningConsoleStreams() {
 		}
 
 		s.ensureServerLogStream(serverID, false, true, true)
+		s.handleCheckServerStatus(map[string]interface{}{"serverId": serverID})
 		restored++
 	}
 
